@@ -1,0 +1,9 @@
+{
+  "packages": {
+    "JuliaModel": {
+      "uuid": "35852c84-174f-4128-92fe-6dd90ce2c20a",
+      "path": "./JuliaModel",
+      "dev": true
+    }
+  }
+}

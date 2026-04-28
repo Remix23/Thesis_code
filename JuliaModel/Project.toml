@@ -1,0 +1,10 @@
+name = "JuliaModel"
+uuid = "35852c84-174f-4128-92fe-6dd90ce2c20a"
+version = "0.1.0"
+authors = ["Remix23 <keru1000@gmail.com>"]
+
+[deps]
+BeforeIT = "ca9fcad7-41d0-4f76-b1e5-366c28bce52e"
+
+[compat]
+BeforeIT = "0.5.0"
