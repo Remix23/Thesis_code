@@ -1,4 +1,5 @@
 venv
+sbi-logs
 *.aux
 *.fdb_latexmk
 *.fls
