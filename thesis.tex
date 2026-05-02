@@ -1,0 +1,124 @@
+\documentclass{article}
+\usepackage{graphicx} % Required for inserting images
+\usepackage{amsmath, amsfonts}
+
+\title{Thesis}
+\author{Jerzy Rzeszutkowski}
+\date{April 2026}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+Question: To what extent does Neural Posterior Estimation improve the calibration and macro economical forecasting performance of a macroeconomic Agent-Based Model relative to traditional estimation methods?
+
+\section{Literature review}
+In the current state of the art macro economic modelling, there are two main  
+approaches. The first one is based on Dynamic Stochastic General Equilibrium (DSGE) models, 
+which are widely used in macroeconomics for policy analysis and forecasting. Popularized by Smets and Wouters (2007), these models are built on microeconomic foundations and incorporate rational expectations.
+However, they often rely on strong assumptions and may not capture the complexity of real-world economies. 
+
+The second approach, analyzed in this paper, is based on Agent-Based Models (ABMs). First used for economic modelling by Orcutt (1957), ABMs have gained popularity after the financial crisis of 2008. 
+Presenting a more flexible framework than DSGE models, ABMs allow for the inclusion of heterogeneous agents, non-linear interactions, and emergent phenomena.
+Results by Farmer and Foley (2009), suggest that ABMs can provide valuable insights into economic dynamics and policy implications, especially in situations where traditional models struggle to capture the complexity of the economy.
+
+
+
+
+\section{Methodology}
+We will try to answer the question, whether Neural Posterior Estimation improves the calibration and forecasting performance of ABM models. As the underlying simulation engine, we use ABM model developed by Glielmo et al. (2023), based on Austrian economy in 2010Q1 being the reference period for most of the parameters. To calibrate the remaining few, we will use Neural Posterior Estimation method (Dyer. et al 2024) (NPE). 
+
+
+\begin{table}[h]
+    \centering
+    \begin{tabular}{c|c|c}
+        Symbol & Name & Prior range \\
+        \hline 
+         $\psi$ & fraction of income devoted to consumption &  \\
+         $\alpha^G $ & Autoregressive coefficient for government consumption & \\
+         $\alpha^E$ & Autoregressive coefficient for exports &  \\
+         $\beta^E$ & Scalar constant for exports & \\
+         $\xi^\gamma$ & Weight of economic growth &  \\
+         \hline \hline
+    \end{tabular}
+    \caption{Parameters to estimate, convention the same as in Poledna et. al paper}
+    \label{tab:parameters_to_estimate}
+\end{table}
+
+The simulation includes a variate of parameters, some of them stay constant, some vary over time. In order to answer the research question, we focused on five constant ones, that we think have significant influence over GDP growth. Moreover we, tried to identify those, for which standard calibration (used by Poledna et. al.) might be difficult. Due to lack of sufficient data or the nature of the parameter itself. Our choice of parameters is presented in Table. \ref{tab:parameters_to_estimate} and explanation together with GDP decomposition is below:
+\begin{equation} \label{gdp_decom}
+    Y = \text{Consumtion} + \text{Investment} + \text{Gov. expenditure} + \text{Net Exports}
+\end{equation}
+\begin{enumerate}
+    \item [$\psi$] - It reflects the fraction of households income devoted to consumption. We decided to include it in our analysis, since consumption is one of the major drivers of GDP growth. While at the same time, the fraction can be quite challenging to estimate. 
+    \item [$\alpha^G$] - Second parameter dictates the persistance of GDP. Since Government expenditure is a significant portion of Austria GDP (more than 50\% in 2024), this parameter can identify this relation. 
+\end{enumerate}
+
+
+The NPE analysis, as described by Dyer et. al. starts by choosing appropriate priors for the choosen parameters. Following the modeling choice of Alves et. al., and lack of strong signals to deviate, we decided to use uniform priors with bounds presented in table \ref{tab:parameters_to_estimate}. Thus, we rely on strong identification in the posterior, to get meaningful results. 
+
+Given the priors, we construct the training dataset for NPE with (N = ) data points. First we draw a join sample from the posteriors ($\theta_i$), and then run a number of simulations $M = 10$ with those 5 parameters changed, in order to filter out some noise from the ABM model. From each simulation run, we extract GDP forecasts $(x_i^{m} \in \mathbb{R}^T$ and average over the batch: 
+\begin{equation} \label{eq:batch_updating}
+    x_i = \frac{1}{M} \sum_{m = 1}^M x_{i}^m 
+\end{equation}. 
+
+\begin{table}[h]
+    \centering
+    \begin{tabular}{l|r}
+        \hline
+        Choice of summary statistics & Motivation \\
+        \hline
+         Series mean &  \\
+         Series standard deviation & \\
+         AR(1) coefficient & \\
+        Lag 4 (yearly) correlation & \\
+        Skewness & \\
+    \hline \hline
+    \end{tabular}
+    \caption{Summary statistics}
+    \label{tab:summary_statisc}
+\end{table}
+
+We obtain N pairs $\{ \theta_i, x_i \}$. Since $x_i$ is a high - dimensional vector (with the dimension being the forecasting horizon of the simulation), we use a set of handcrafted statistics ($n = 10$, table. \ref{tab:summary_statisc}) to reduce variance in the posterior. Moreover, since we are interested in forecasting performance, those statistics can offer more insights about underlying simulation, than raw data. Without those, the NPE might learn spurious relations, or not converge quick enough. 
+\begin{equation}
+    s(x_i) : \mathbb{R}^T \to \mathbb{R}^n
+\end{equation}
+Therefore, the conditional density estimation problem $p(\theta | x)$ transforms into $p(\theta | s(x))$. Which we estimate using extension of normalizing flows (Tabak and Vanden-Eijnden, 2010; Tabak and Turner, 2013; Rezende and Mohamed, 2015) called Masked Autoregressive Flow (Papamakarios and Murray, 2016; Lueckmann et al., 2017; Papamakarios et al., 2019; Greenberg et al., 2019). 
+
+\subsection{Evaluation of the posteriors}
+As with other Bayesian Methods, evaluating the sensibility of the posterior is a crucial step in the process. We approach this section with two checks. First uses simulation based calibration - SBC (Talts et. al., 2018) to asses the validity of the posterior density. Then we take the mean of the posterior to obtain parameter values used to compute final ABM forecast. It is then compared to a) real GDP growth data; b) forecasts by the standard calibration method used in the original paper. 
+
+\section{Results}
+
+\section{Summary}
+
+\section{References}
+\begin{enumerate}
+    \item Poledna, S., Miess, M. G., Hommes, C., and Rabitsch, K. (2023). Economic forecasting with an agent-based model.
+European Economic Review, 151:104306.
+    \item Papamakarios, G., Pavlakou, T., \& Murray, I. (2017). Masked autoregressive flow for density estimation. Advances in neural information processing systems, 30.
+    
+    \item Dyer, J., Cannon, P., Farmer, J. D., and Schmon, S. (2024). Black-box Bayesian inference for agent-based models. Journal of Economic Dynamics and Control, 161:104556. 
+
+    \item Alves, M. L., Dyer, J., Farmer, D., Wooldridge, M., \& Calinescu, A. (2026). Neural Network-Based Parameter Estimation of a Labour Market Agent-Based Model. arXiv preprint arXiv:2602.15572.
+
+    \item Jan-Matthis Lueckmann, Pedro J Goncalves, Giacomo Bassetto, Kaan Ocal, Marcel Nonnen-macher, and Jakob H Macke. Flexible statistical inference for mechanistic models of neural dynamics. Advances in Neural Information Processing Systems, 30, 2017.
+    
+    \item George Papamakarios, David Sterratt, and Iain Murray. Sequential neural likelihood: Fast likelihood-free inference with autoregressive flows. In The 22nd International Conference on Artificial Intelligence and Statistics, pages 837–848. PMLR, 2019.
+
+    \item David S. Greenberg, Marcel Nonnenmacher, and Jakob H. Macke. Automatic posterior trans-formation for likelihood-free inference. 36th International Conference on Machine Learning, ICML 2019, 2019-June:4288–4304, 2019.
+
+    \item Esteban G Tabak and Eric Vanden-Eijnden. Density estimation by dual ascent of the log-likelihood. Communications in Mathematical Sciences, 8(1):217–233, 2010.
+
+    \item Esteban G Tabak and Cristina V Turner. A family of nonparametric density estimation algorithms. Communications on Pure and Applied Mathematics, 66(2):145–164, 2013.
+
+    \item Danilo Rezende and Shakir Mohamed. Variational inference with normalizing flows. In Francis Bach and David Blei, editors, Proceedings of the 32nd International Conference on Machine Learning, volume 37 of Proceedings of Machine Learning Research, pages 1530–1538, Lille, France, 07–09 Jul 2015. PMLR. URL https://proceedings.mlr.press/v37/rezende15.html.
+
+    \item Glielmo, A., Devetak, M., Meligrana, A., \& Poledna, S. (2025). Beforeit. jl: High-performance agent-based macroeconomics made easy. arXiv preprint arXiv:2502.13267. 
+
+    \item Talts, S., Betancourt, M., Simpson, D., Vehtari, A., \& Gelman, A. (2018). Validating Bayesian inference algorithms with simulation-based calibration. arXiv preprint arXiv:1804.06788.
+
+\end{enumerate}
+
+\end{document}

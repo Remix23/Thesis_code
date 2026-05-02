@@ -7,6 +7,8 @@ from sbi.inference import NPE
 import torch
 import numpy as np
 
+### for now, only real GDP
+
 def run_sim(parameters, initial_conditions, T):
     data = jl.run_simulation(parameters, initial_conditions, T)
     return np.array(data)
@@ -16,23 +18,35 @@ def compute_statistics (sim_out):
     # for example, we can compute the mean and standard deviation of real GDP
     mean_gdp = np.mean(sim_out)
     std_gdp = np.std(sim_out)
-    return np.array([mean_gdp, std_gdp])
-### of statistics
-n_stats = 2
-n_draws = 10
 
+    ### yearly correlation y_t and y_t-4
+    yearly_corr = np.correlate(sim_out[:-4], sim_out[4:])
+    ### AR(1) coefficient of real GDP
+    lagged = sim_out[:-1]
+    target = sim_out[1:]
+    ols = np.polyfit(lagged, target, 1)
+    ar1_coeff = ols[0]
+    ### skewness of real GDP
+    skewness_gdp = np.mean((sim_out - mean_gdp)**3) / std_gdp**3
+
+    return np.array([mean_gdp, std_gdp, yearly_corr, ar1_coeff, skewness_gdp])
+### of statistics
+n_stats = 5
+n_draws = 10
 parameters = jl.get_parameters()
 initial_conditions = jl.get_initial_conditions()
 
 ### parameters:
-parameters_to_calibrate = ["rho", "xi_pi", "xi_gamma", "alpha_G", "alpha_E", "alpha_I", "psi"]
+beta0 = parameters["beta_E"]
+
+parameters_to_calibrate = ["rho", "alpha_G", "alpha_E", "beta_E", "xi_gamma"]
 
 priors_bounds = [
     (0.7, 0.99), # rho
-    (1.0, 2.5),  # xi_pi
-    (0.0, 1.0),    # xi_gamma
-    (0.5, .99), (0.5, .99), (0.5, .99), # alpha_G, alpha_E, alpha_L
-    (0.7, .99),    # psi
+    (0.5, .99), # alpha_G,
+    (0.5, .99), # alpha_E
+    (0.5*beta0, 1.5*beta0), # beta_E -> based on the initial found value
+    (0, 1),    # xi_gamma
 ]
 
 for param, bounds in zip(parameters_to_calibrate, priors_bounds):
