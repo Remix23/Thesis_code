@@ -5,3 +5,4 @@ sbi-logs
 *.fls
 *.log
 *.synctex.gz
+*.npz
