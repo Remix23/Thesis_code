@@ -580,7 +580,7 @@ uuid = "aa1ae85d-cabe-5617-a682-6adf51b2e16a"
 version = "0.10.12"
 
 [[deps.JuliaModel]]
-deps = ["BeforeIT"]
+deps = ["BeforeIT", "CalibrateBeforeIT"]
 path = "."
 uuid = "35852c84-174f-4128-92fe-6dd90ce2c20a"
 version = "0.1.0"
