@@ -101,7 +101,7 @@ npe_x = np.ndarray(shape = (n_draws, n_stats))
 
 ### simulate data for NPE construction
 
-if path.exists("npe_data.npz") and len(argv) > 1 and argv[1] == "load":
+if len(argv) > 1 and argv[1] == "load":
     filename = "npe_data.npz"
     if len(argv) > 2:
         filename = argv[2]
@@ -151,7 +151,7 @@ real_gdp = pd.read_csv("data/austria_real_gdp_fred.csv", parse_dates=["observati
 real_gdp["observation_date"] = pd.to_datetime(real_gdp["observation_date"])
 forecast_truth = real_gdp[real_gdp["observation_date"] >= CALIBRATION_DATE]
 
-real_gdp_validation = forecast_truth["CLVMNACSCAB1GQAT"].values
+real_gdp_validation = forecast_truth["CLVMNACSCAB1GQAT"].values[:(T + 1)]
 
 original_abm_prediction = run_monte_carlo(parameters, initial_conditions, T, num_simulations=100)
 
@@ -185,7 +185,7 @@ if "validation" in argv:
     # check_sbc(sbc_results)
 
 
-post_mean = posterior.sample((1000, ), x = conditional_stats).mean()
+post_mean = posterior.sample((1000, ), x = conditional_stats).mean(axis=0)
 
 final_params = rep_parameters(parameters, post_mean)
 npe_prediction = run_monte_carlo(final_params, initial_conditions, T, num_simulations=100)
