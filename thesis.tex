@@ -32,10 +32,10 @@ The foundation for our analysis is the work of Poledna et. al. (2023), who devel
 relies on a combination of cross sectional and time series data. Where the parameters for the goverment actions are estimated as coefficient of AR(1) processes.
 Moreover, my main parameter of interest, the fraction of income devoted to consumption ($\psi$), is estimated from input - output tables provided by Statistik Austria. 
 
-
-
 Their model was extended by the Wiese et. al. (2024) paper, where they incorporated Bayesian Method developed by Dyer et. al. (2024) to calibrate some parameters. They show that this method can improve the forecasting performance of the model, especially in the short term. 
-Another application of the Dyer et. al. method is presented by Alves et. al. (2026), where they tune a 
+Another application of the Dyer et. al. method is presented by Alves et. al. (2026), where they tune a labour market ABM. They choose three fundamental parameters and find that handcrafted summary statistics result in weaker posterior than NN learned ones. 
+
+
 \section{Methodology}
 We will try to answer the question, whether Neural Posterior Estimation improves the calibration and forecasting performance of ABM models. As the underlying simulation engine, we use ABM model developed by Glielmo et al. (2023), based on Austrian economy in 2010Q1 being the reference period for most of the parameters. To calibrate the remaining few, we will use Neural Posterior Estimation method (Dyer. et al 2024) (NPE). 
 
@@ -97,7 +97,12 @@ We obtain N pairs $\{ \theta_i, x_i \}$. Since $x_i$ is a high - dimensional vec
 Therefore, the conditional density estimation problem $p(\theta | x)$ transforms into $p(\theta | s(x))$. Which we estimate using extension of normalizing flows (Tabak and Vanden-Eijnden, 2010; Tabak and Turner, 2013; Rezende and Mohamed, 2015) called Masked Autoregressive Flow (Papamakarios and Murray, 2016; Lueckmann et al., 2017; Papamakarios et al., 2019; Greenberg et al., 2019). 
 
 \subsection{Evaluation of the posteriors}
-As with other Bayesian Methods, evaluating the sensibility of the posterior is a crucial step in the process. We approach this section with two checks. First uses simulation based calibration - SBC (Talts et. al., 2018) to asses the validity of the posterior density. Then we take the mean of the posterior to obtain parameter values used to compute final ABM forecast. It is then compared to a) real GDP growth data; b) forecasts by the standard calibration method used in the original paper. 
+As with other Bayesian Methods, evaluating the sensibility of the posterior is a crucial step in the process. 
+Since we construct a conditional posterior used for forecasting, we use historical data: from 1995Q1 to 2009Q4, to obtain required summary statistics: $s(x_{obs}) = s(x_{1995Q1:2009Q4})$. 
+With those to condition on, we approach the evaluation in two steps, with sampling from the posterior $p(\theta | s(x_{obs}))$.
+First we check the posterior itself using conditional densities plots and simulation based calibration - SBC (Talts et. al., 2018 and Cook et al., 2006) to asses its validity. 
+Then we take the mean of the posterior to obtain parameter values used to compute final ABM forecast. 
+It is then compared (RMSFE) to a) real GDP growth data; b) forecasts by the standard calibration method used in the original paper.
 
 \section{Results}
 
@@ -132,6 +137,8 @@ European Economic Review, 151:104306.
     \item Wiese, S., Kaszowska-Mojsa, J., Dyer, J., Moran, J., Pangallo, M., Lafond, F., ... \& Farmer, J. D. (2024). Forecasting macroeconomic dynamics using a calibrated data-driven agent-based model. arXiv preprint arXiv:2409.18760.
 
     \item Grazzini, J., Richiardi, M. G., \& Tsionas, M. (2017). Bayesian estimation of agent-based models. Journal of Economic Dynamics and Control, 77, 26-47
+
+    \item Cook, S. R., Gelman, A., \& Rubin, D. B. (2006). Validation of Software for Bayesian Models Using Posterior Quantiles. Journal of Computational and Graphical Statistics, 15(3), 675–692. https://doi.org/10.1198/106186006X136976
 
 \end{enumerate}
 

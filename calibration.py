@@ -12,6 +12,10 @@ print(f"Using JuliaModel with {jl.seval('Threads.nthreads()')} threads.")
 
 from sbi.utils import BoxUniform
 from sbi.inference import NPE
+from sbi.analysis import pairplot
+
+from sbi.diagnostics import check_sbc, run_sbc
+
 import torch
 import numpy as np
 
@@ -44,9 +48,13 @@ def run_monte_carlo(parameters, initial_conditions, T, num_simulations):
 def compute_statistics (sim_out):
     # compute summary statistics from the simulated data
     # for example, we can compute the mean and standard deviation of real GDP
+    growth_rates = np.diff(sim_out) / sim_out[:-1]
 
     mean_gdp = np.mean(sim_out)
+    mean_gdprowth = np.mean(growth_rates)
+
     std_gdp = np.std(sim_out)
+    std_gdprowth = np.std(growth_rates)
 
     ### yearly correlation y_t and y_t-4
     yearly_corr = np.corrcoef(sim_out[:-4], sim_out[4:])[0, 1]
@@ -57,16 +65,12 @@ def compute_statistics (sim_out):
     ar1_coeff = ols[0]
     ### skewness of real GDP
     # skewness_gdp = np.mean((sim_out - mean_gdp)**3) / std_gdp**3
-    return np.array([mean_gdp, std_gdp, yearly_corr, ar1_coeff])
+    return np.array([mean_gdprowth, std_gdprowth, yearly_corr, ar1_coeff])
 ### of statistics
 n_stats = 4
-n_draws = 200
+n_draws = 10**4
 parameters = jl.get_parameters()
 
-not_floats = [(parameters[param].shape, param) for param in parameters if not isinstance(parameters[param], float)]
-print(not_floats)
-print(np.sum(parameters["I_s"]))
-exit()
 initial_conditions = jl.get_initial_conditions()
 
 ### parameters:
@@ -98,8 +102,12 @@ npe_x = np.ndarray(shape = (n_draws, n_stats))
 ### simulate data for NPE construction
 
 if path.exists("npe_data.npz") and len(argv) > 1 and argv[1] == "load":
-    print("Loading existing NPE data from file...")
-    data = np.load("npe_data.npz")
+    filename = "npe_data.npz"
+    if len(argv) > 2:
+        filename = argv[2]
+
+    print(f"Loading existing NPE data from file {filename}...")
+    data = np.load(filename)
     prior_draws = data["prior_draws"]
     npe_x = data["npe_x"]
 else:
@@ -123,6 +131,11 @@ else:
 ### masked auto-regressive flow (MAF) density estimator
 # elaborate on the choice of MAF and its advantages for this problem
 
+if argv[1] == "gen":
+    print("NPE data generated and saved to file. Exiting.")
+    exit()
+
+### NPE 
 # to tensor
 prior_draws = torch.tensor(prior_draws, dtype=torch.float32)
 npe_x = torch.tensor(npe_x, dtype=torch.float32)
@@ -133,35 +146,71 @@ inference.train()
 
 posterior = inference.build_posterior()
 
-print("Posterior sampling...")
-post_mean = posterior.sample((1000, ), x=npe_x.mean(dim=0)).mean(dim=0)
-print("Posterior mean:", post_mean)
-
-### simulation based calibration
-
-
-### validation
 # quartile data
 real_gdp = pd.read_csv("data/austria_real_gdp_fred.csv", parse_dates=["observation_date"])
 real_gdp["observation_date"] = pd.to_datetime(real_gdp["observation_date"])
-real_gdp = real_gdp[real_gdp["observation_date"] >= CALIBRATION_DATE]
-real_gdp = real_gdp["CLVMNACSCAB1GQAT"].values
+forecast_truth = real_gdp[real_gdp["observation_date"] >= CALIBRATION_DATE]
+
+real_gdp_validation = forecast_truth["CLVMNACSCAB1GQAT"].values
+
+original_abm_prediction = run_monte_carlo(parameters, initial_conditions, T, num_simulations=100)
+
+### generate final prediction: (condition from 1995 to 2010)
+conditional_period = real_gdp[real_gdp["observation_date"] < CALIBRATION_DATE]
+conditional_values = conditional_period["CLVMNACSCAB1GQAT"].values
+conditional_stats = compute_statistics(conditional_values)
+
+if "validation" in argv:
+    _ = pairplot(
+        posterior.sample((1000, ), x = conditional_stats).numpy(),
+        labels=parameters_to_calibrate,
+        points=np.array([parameters[param] for param in parameters_to_calibrate])[None, :],
+        title = "Posterior distribution of calibrated parameters compared to calibrated parameter values",
+    )
+
+    plt.show()
+    ### simulation based calibration
+    num_sbc_samples = 100
+    thetas = priors.sample((num_sbc_samples,))
+    params = [rep_parameters(parameters, theta) for theta in thetas]
+    xs = [run_monte_carlo(param, initial_conditions, T, num_simulations=10) for param in params]
+    stats = [compute_statistics(x) for x in xs]
+    stats = torch.tensor(stats, dtype=torch.float32)
+    sbc_results = run_sbc(
+        posterior=posterior,
+        thetas=thetas,
+        xs = stats,
+        num_posterior_samples=100
+    )
+    # check_sbc(sbc_results)
+
+
+post_mean = posterior.sample((1000, ), x = conditional_stats).mean()
 
 final_params = rep_parameters(parameters, post_mean)
+npe_prediction = run_monte_carlo(final_params, initial_conditions, T, num_simulations=100)
 
-prediction = run_monte_carlo(final_params, initial_conditions, T, num_simulations=50)
+### RMSE
+rmse_npe = np.sqrt(np.mean((npe_prediction - real_gdp_validation)**2))
+rmse_abm = np.sqrt(np.mean((original_abm_prediction - real_gdp_validation)**2))
+print(f"RMSE of NPE prediction: {rmse_npe}")
+print(f"RMSE of original ABM prediction: {rmse_abm}")
+
+### diabold - mariano test
 
 # Save prediction to CSV
 calibration_date = pd.to_datetime(CALIBRATION_DATE)
-date_range = pd.date_range(start=calibration_date, periods=len(prediction), freq='QS')
+date_range = pd.date_range(start=calibration_date, periods=len(npe_prediction), freq='QS')
 prediction_df = pd.DataFrame({
     'date': date_range,
-    'prediction': prediction
+    'prediction': npe_prediction
 })
 prediction_df.to_csv('prediction.csv', index=False)
 
-plt.plot(prediction, label="Prediction")
-plt.plot(real_gdp[:T], label="Real GDP")
+### statistics + plots:
+plt.plot(npe_prediction, label="Prediction")
+plt.plot(real_gdp_validation, label="Real GDP")
+plt.plot(original_abm_prediction, label="Original ABM Prediction")
 plt.legend()
-plt.title("Model Prediction vs Real GDP")
+plt.title("Predictions vs Real GDP")
 plt.show()
