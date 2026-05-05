@@ -21,7 +21,7 @@ import numpy as np
 
 import matplotlib.pyplot as plt
 import pandas as pd
-from os import path
+from os import path, listdir, getcwd
 from sys import argv
 
 from time import time
@@ -45,10 +45,18 @@ def run_monte_carlo(parameters, initial_conditions, T, num_simulations):
     data = np.mean(data, axis=0) # average across simulations
     return np.array(data)
 
+def findar_p (times_series, p):
+    target = times_series[p:]
+    lagged = np.array([times_series[i:-(p - i)] for i in range(p)]).T
+    ones = np.ones((lagged.shape[0], 1))
+    lagged = np.hstack((ones, lagged))
+    ols = np.linalg.lstsq(lagged, target, rcond=None)
+    return ols[0]
+
 def compute_statistics (sim_out):
     # compute summary statistics from the simulated data
     # for example, we can compute the mean and standard deviation of real GDP
-    growth_rates = np.diff(sim_out) / sim_out[:-1]
+    growth_rates = np.diff(np.log(sim_out))
 
     mean_gdp = np.mean(sim_out)
     mean_gdprowth = np.mean(growth_rates)
@@ -57,18 +65,44 @@ def compute_statistics (sim_out):
     std_gdprowth = np.std(growth_rates)
 
     ### yearly correlation y_t and y_t-4
-    yearly_corr = np.corrcoef(sim_out[:-4], sim_out[4:])[0, 1]
+    yearly_corr = np.corrcoef(growth_rates[:-4], growth_rates[4:])[0, 1]
     ### AR(1) coefficient of real GDP
-    lagged = sim_out[:-1]
-    target = sim_out[1:]
-    ols = np.polyfit(lagged, target, 1)
-    ar1_coeff = ols[0]
+    ar1_coeff = findar_p(sim_out, 1)[1]
+    ar2_coeff = findar_p(sim_out, 2)[2]
     ### skewness of real GDP
-    # skewness_gdp = np.mean((sim_out - mean_gdp)**3) / std_gdp**3
-    return np.array([mean_gdprowth, std_gdprowth, yearly_corr, ar1_coeff])
+    skewness_gdp = np.mean((growth_rates - mean_gdprowth)**3) / std_gdprowth**3
+    return np.array([mean_gdprowth, std_gdprowth, yearly_corr, ar1_coeff, ar2_coeff, skewness_gdp])
+
+# if "load" in argv:
+#     idx = argv.index("load")
+#     ### check for filename argument
+#     if len(argv) > idx + 1:
+#         filename = argv[idx + 1]
+#     else:
+#         npz_sources = listdir() + listdir(path.join(getcwd(), "data"))
+#         files = [f for f in npz_sources if f.endswith(".npz")]
+#         if len(files) == 0:
+#             print("No .npz files found in the current directory. Please provide a valid filename.")
+#             exit()
+#         print("Available .npz files:")
+#         for f in files:
+#             print(f)        
+#         filename = input("Enter the filename to load: ")
+#         if not path.isfile(filename):
+#             print(f"File {filename} does not exist. Please provide a valid filename.")
+#             exit()
+
+#         ### load data
+#     print(f"Loading existing NPE data from file {filename}...")
+#     data = np.load(filename)
+#     prior_draws = data["prior_draws"]
+#     npe_x = data["npe_x"]
+#     priors_bounds = data["priors_bounds"]
+#     parameters_to_calibrate = data["parameters_to_calibrate"]
+
 ### of statistics
-n_stats = 4
-n_draws = 10**4
+n_stats = 6
+n_draws = int(input("Enter the number of prior draws for NPE data generation: "))
 parameters = jl.get_parameters()
 
 initial_conditions = jl.get_initial_conditions()
@@ -77,11 +111,12 @@ initial_conditions = jl.get_initial_conditions()
 beta0 = parameters["beta_E"]
 
 # parameters_to_calibrate = ["rho", "alpha_G", "alpha_E", "beta_E", "xi_gamma"]
-parameters_to_calibrate = ["psi", "alpha_G", "xi_gamma"]
+parameters_to_calibrate = ["psi", "alpha_G", "beta_E", "xi_gamma"]
 
 priors_bounds = [
     (0.7, 0.99), # psi
-    (0.7, .99), # alpha_G,
+    (0.7, .999), # alpha_G,
+    (0.5*beta0, 1.5 * beta0), # beta_E
     # (0.5, .99), # alpha_E
     (.7, 1.5),    # xi_gamma
 ]
@@ -100,11 +135,23 @@ priors = BoxUniform(low=priors_bounds[:, 0], high=priors_bounds[:, 1])
 npe_x = np.ndarray(shape = (n_draws, n_stats))
 
 ### simulate data for NPE construction
-
 if len(argv) > 1 and argv[1] == "load":
     filename = "npe_data.npz"
     if len(argv) > 2:
         filename = argv[2]
+
+    else:
+        files = [f for f in listdir() if f.endswith(".npz")]
+        if len(files) == 0:
+            print("No .npz files found in the current directory. Please provide a valid filename.")
+            exit()
+        print("Available .npz files:")
+        for f in files:
+            print(f)        
+        filename = input("Enter the filename to load: ")
+        if not path.isfile(filename):
+            print(f"File {filename} does not exist. Please provide a valid filename.")
+            exit()
 
     print(f"Loading existing NPE data from file {filename}...")
     data = np.load(filename)
@@ -126,12 +173,13 @@ else:
         print(f"Completed {i+1}/{n_draws} simulations for NPE data generation", end="\r")
     
     ## save
-    np.savez("npe_data.npz", prior_draws=prior_draws.numpy(), npe_x=npe_x)
+    name = f"npe_data_p{len(parameters_to_calibrate)}_n{n_draws}_s{n_stats}.npz"
+    np.savez(name, prior_draws=prior_draws.numpy(), npe_x=npe_x, priors_bounds=priors_bounds.numpy(), parameters=parameters_to_calibrate)
 
 ### masked auto-regressive flow (MAF) density estimator
 # elaborate on the choice of MAF and its advantages for this problem
 
-if argv[1] == "gen":
+if "gen" in argv:
     print("NPE data generated and saved to file. Exiting.")
     exit()
 
@@ -149,18 +197,13 @@ posterior = inference.build_posterior()
 # quartile data
 real_gdp = pd.read_csv("data/austria_real_gdp_fred.csv", parse_dates=["observation_date"])
 real_gdp["observation_date"] = pd.to_datetime(real_gdp["observation_date"])
-forecast_truth = real_gdp[real_gdp["observation_date"] >= CALIBRATION_DATE]
-
-real_gdp_validation = forecast_truth["CLVMNACSCAB1GQAT"].values[:(T + 1)]
-
-original_abm_prediction = run_monte_carlo(parameters, initial_conditions, T, num_simulations=100)
 
 ### generate final prediction: (condition from 1995 to 2010)
 conditional_period = real_gdp[real_gdp["observation_date"] < CALIBRATION_DATE]
 conditional_values = conditional_period["CLVMNACSCAB1GQAT"].values
 conditional_stats = compute_statistics(conditional_values)
 
-if "validation" in argv:
+if "pairplot" in argv:
     _ = pairplot(
         posterior.sample((1000, ), x = conditional_stats).numpy(),
         labels=parameters_to_calibrate,
@@ -168,9 +211,18 @@ if "validation" in argv:
         title = "Posterior distribution of calibrated parameters compared to calibrated parameter values",
     )
 
-    plt.show()
+    plt.savefig(f"pngs/posterior_pairplot_p{len(parameters_to_calibrate)}_n{n_draws}_s{n_stats}.png")
+    plt.clf()
+
+if "ppc" in argv:
+    ### posterio predictive checks
+    samples = posterior.sample((100, ), x = conditional_stats)
+    for i, sample in enumerate(samples):
+        pass 
+
+if "sbc" in argv:
     ### simulation based calibration
-    num_sbc_samples = 100
+    num_sbc_samples = 10
     thetas = priors.sample((num_sbc_samples,))
     params = [rep_parameters(parameters, theta) for theta in thetas]
     xs = [run_monte_carlo(param, initial_conditions, T, num_simulations=10) for param in params]
@@ -187,10 +239,20 @@ if "validation" in argv:
 
 post_mean = posterior.sample((1000, ), x = conditional_stats).mean(axis=0)
 
+print("Posterior mean of calibrated parameters:")
+for i, param in enumerate(parameters_to_calibrate):
+    print(f"  {param}: {post_mean[i]}")
+
 final_params = rep_parameters(parameters, post_mean)
 npe_prediction = run_monte_carlo(final_params, initial_conditions, T, num_simulations=100)
 
 ### RMSE
+forecast_truth = real_gdp[real_gdp["observation_date"] >= CALIBRATION_DATE]
+
+real_gdp_validation = forecast_truth["CLVMNACSCAB1GQAT"].values[:(T + 1)]
+
+original_abm_prediction = run_monte_carlo(parameters, initial_conditions, T, num_simulations=100)
+
 rmse_npe = np.sqrt(np.mean((npe_prediction - real_gdp_validation)**2))
 rmse_abm = np.sqrt(np.mean((original_abm_prediction - real_gdp_validation)**2))
 print(f"RMSE of NPE prediction: {rmse_npe}")
@@ -203,9 +265,9 @@ calibration_date = pd.to_datetime(CALIBRATION_DATE)
 date_range = pd.date_range(start=calibration_date, periods=len(npe_prediction), freq='QS')
 prediction_df = pd.DataFrame({
     'date': date_range,
-    'prediction': npe_prediction
+    'prediction': npe_prediction,
 })
-prediction_df.to_csv('prediction.csv', index=False)
+prediction_df.to_csv(f"predictions/prediction_p{len(parameters_to_calibrate)}_n{n_draws}_s{n_stats}.csv", index=False)
 
 ### statistics + plots:
 plt.plot(npe_prediction, label="Prediction")
@@ -213,4 +275,5 @@ plt.plot(real_gdp_validation, label="Real GDP")
 plt.plot(original_abm_prediction, label="Original ABM Prediction")
 plt.legend()
 plt.title("Predictions vs Real GDP")
+plt.savefig(f"pngs/prediction_plot_p{len(parameters_to_calibrate)}_n{n_draws}_s{n_stats}.png")
 plt.show()
