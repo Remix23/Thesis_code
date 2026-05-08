@@ -2,7 +2,7 @@
 
 julia_version = "1.12.5"
 manifest_format = "2.0"
-project_hash = "aae31a7bcac76b88bca41cd4cd74b5c9fd290d6c"
+project_hash = "23297386689878a746e19243325627f1fc02dfc3"
 
 [[deps.Adapt]]
 deps = ["LinearAlgebra", "Requires"]
@@ -580,7 +580,7 @@ uuid = "aa1ae85d-cabe-5617-a682-6adf51b2e16a"
 version = "0.10.12"
 
 [[deps.JuliaModel]]
-deps = ["BeforeIT", "CalibrateBeforeIT"]
+deps = ["BeforeIT", "CalibrateBeforeIT", "Dates"]
 path = "."
 uuid = "35852c84-174f-4128-92fe-6dd90ce2c20a"
 version = "0.1.0"

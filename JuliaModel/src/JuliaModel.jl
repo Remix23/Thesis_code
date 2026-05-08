@@ -1,6 +1,7 @@
 module JuliaModel
 
 import BeforeIT
+using Dates
 
 function run_simulation(parameters, initial_conditions, T)
     if Threads.nthreads() > 1
@@ -28,11 +29,21 @@ function run_for_different_parameters(parameters_list, initial_conditions, T)
     return gdps
 end
 
-function get_parameters() 
-    return BeforeIT.AUSTRIA2010Q1.parameters
+function get_real()
+    cal = BeforeIT.ITALY_CALIBRATION
+    d = cal.data["real_gdp_quarterly"]
+    first = DateTime(1996, 3, 31)
+    quarters = length(d)
+    quarterly_dates = [first + Month(3 * i) for i in 0:(quarters - 1)]
+    return [quarterly_dates, d]
 end
-function get_initial_conditions()
-    return BeforeIT.AUSTRIA2010Q1.initial_conditions
+
+function calibrate(year, month, day) 
+    cal = BeforeIT.ITALY_CALIBRATION
+    calibration_date = DateTime(year, month, day)
+    println("Calibrating model with date: ", calibration_date)
+    parameters, initial_conditions = BeforeIT.get_params_and_initial_conditions(cal, calibration_date; scale = 0.0001)
+    return parameters, initial_conditions
 end
 end # module JuliaModel
 

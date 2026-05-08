@@ -1,14 +1,13 @@
-from os import environ, listdir, path, getcwd
+from os import path, listdir, getcwd, environ
 from sys import argv
-
+from datetime import datetime, date
 NUM_THREADS = 10
 
 environ["JULIA_NUM_THREADS"] = str(NUM_THREADS)
 environ["PYTHON_JULIACALL_HANDLE_SIGNALS"] = "yes"
 
 from juliacall import Main as jl
-
-jl.seval("using JuliaModel: run_simulation, get_parameters, get_initial_conditions, run_for_different_parameters, run_monte_carlo")
+jl.seval("using JuliaModel: run_simulation, get_real, calibrate, run_monte_carlo")
 print(f"Using JuliaModel with {jl.seval('Threads.nthreads()')} threads.")
 
 from sbi.utils import BoxUniform
@@ -19,26 +18,14 @@ from sbi.diagnostics import check_sbc, run_sbc
 
 import torch
 import numpy as np
+
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from time import time
 
-CALIBRATION_DATE = "2010-01-01"
-T = 20
-
-STATISTISC = {
-    "mean_growth": True,
-    "std_growth": True,
-    "yearly_corr": True,
-    "ar_1": True,
-    "ar_2": True,
-    "skewness_gdp": True
-}
-
-def rep_parameters(parameters, params_to_calibrate, draw):
+def rep_parameters(parameters, parameters_to_calibrate, draw):
     sim_paramerters = parameters.copy()
-    for param, value in zip(params_to_calibrate, draw.tolist()):
+    for param, value in zip(parameters_to_calibrate, draw.tolist()):
         sim_paramerters[param] = value
     return sim_paramerters
 
@@ -51,121 +38,196 @@ def run_monte_carlo(parameters, initial_conditions, T, num_simulations):
     data = np.mean(data, axis=0) # average across simulations
     return np.array(data)
 
-def ar_params(time_series, p):
-    """Estimate AR(p) parameters for a univariate time series using OLS.
+def findar_p (times_series, p):
+    target = times_series[p:]
+    lagged = np.array([times_series[i:-(p - i)] for i in range(p)]).T
+    ones = np.ones((lagged.shape[0], 1))
+    lagged = np.hstack((ones, lagged))
+    ols = np.linalg.lstsq(lagged, target, rcond=None)
+    return ols[0]
 
-    Returns array of length p with AR coefficients (phi_1 ... phi_p) and
-    intercept as a separate value: (intercept, coeffs_array).
-    """
-    y = np.asarray(time_series)
-    n = y.shape[0]
-    if n <= p:
-        raise ValueError("Time series length must be greater than p")
-
-    # build lagged design matrix with intercept
-    X = np.ones((n - p, p + 1))
-    for i in range(p):
-        X[:, i + 1] = y[p - i - 1:n - i - 1]
-    y_target = y[p:]
-
-    # OLS solution
-    coef, *_ = np.linalg.lstsq(X, y_target, rcond=None)
-    intercept = coef[0]
-    ar_coefs = coef[1:]
-    return ar_coefs[p - 1], ar_coefs
-
-def compute_statistics (sim_out, chosen_stats):
+def compute_statistics (sim_out):
     # compute summary statistics from the simulated data
     # for example, we can compute the mean and standard deviation of real GDP
-    log_diff = np.diff(np.log(sim_out))
+    growth_rates = np.diff(np.log(sim_out))
 
-    mean_gdprowth = np.mean(log_diff)
+    mean_gdp = np.mean(sim_out)
+    mean_gdprowth = np.mean(growth_rates)
 
-    std_gdprowth = np.std(log_diff)
+    std_gdp = np.std(sim_out)
+    std_gdprowth = np.std(growth_rates)
 
     ### yearly correlation y_t and y_t-4
-    yearly_corr = np.corrcoef(log_diff[:-4], log_diff[4:])[0, 1]
+    yearly_corr = np.corrcoef(growth_rates[:-4], growth_rates[4:])[0, 1]
     ### AR(1) coefficient of real GDP
-    ar1_coeff = ar_params(log_diff, 1)[0]
-    ar2_coeff = ar_params(log_diff, 2)[0]
+    ar1_coeff = findar_p(sim_out, 1)[1]
+    ar2_coeff = findar_p(sim_out, 2)[2]
     ### skewness of real GDP
-    skewness_gdp = np.mean((log_diff - mean_gdprowth)**3) / std_gdprowth**3
-
-    res = {
-        "mean_growth": mean_gdprowth,
-        "std_growth": std_gdprowth,
-        "yearly_corr": yearly_corr,
-        "ar_1": ar1_coeff,
-        "ar_2": ar2_coeff,
-        "skewness_gdp": skewness_gdp
-    }
-    return np.array([res[stat] for stat in chosen_stats])
+    skewness_gdp = np.mean((growth_rates - mean_gdprowth)**3) / std_gdprowth**3
+    return np.array([mean_gdprowth, std_gdprowth, yearly_corr, ar1_coeff, ar2_coeff, skewness_gdp])
 
 
-parameters = jl.get_parameters()
+### initial calibration
+initial_calibration = datetime(2010, 3, 31)
 
-initial_conditions = jl.get_initial_conditions()
+n = 5 # number of years to simulate
+T_hist = 4 * n # quaters
+final_calibration = datetime(initial_calibration.year + T_hist // 4, initial_calibration.month, initial_calibration.day)
 
-PARAMETERS = [
-    "psi", # consumption parameter
-    "alpha_G", # capital share in production function
-    "alpha_E",
-    "beta_E", # depreciation rate of capital
-    "xi_gamma"
+T_forecast = 4 * 5 # 5 years forecast
+date_forecast = datetime(final_calibration.year + T_forecast // 4, final_calibration.month, final_calibration.day)
+### real data
+csv_data = pd.read_csv("data/italy_real_gdp.csv", parse_dates=["observation_date"])
+csv_data = csv_data[csv_data["observation_date"] >= initial_calibration]
+quarterly_dates, bit = [np.array(x) for x in jl.get_real()]
+
+n = len(quarterly_dates)
+df = pd.DataFrame({"date": quarterly_dates.flatten(), "real": bit.flatten()})
+df = df[df["date"] >= initial_calibration]
+
+hist_params, hist_initial = jl.calibrate(initial_calibration.year, initial_calibration.month, initial_calibration.day)
+
+final_params, final_initial = jl.calibrate(final_calibration.year, final_calibration.month, final_calibration.day)
+### gen historical date for NPE
+beta0 = hist_params["beta_E"]
+
+# parameters_to_calibrate = ["rho", "alpha_G", "alpha_E", "beta_E", "xi_gamma"]
+parameters_to_calibrate = ["psi", "alpha_G", "beta_E", "xi_gamma"]
+
+priors_bounds = [
+    (0.7, 0.99), # psi
+    (0.8, .999), # alpha_G,
+    (0.5*beta0, 1.5 * beta0), # beta_E
+    # (0.5, .99), # alpha_E
+    (.7, 1.5),    # xi_gamma
 ]
 
-beta0 = parameters["beta_E"]
+for param, bounds in zip(parameters_to_calibrate, priors_bounds):
+    calibrated = hist_params[param]
+    if calibrated <= bounds[0] or calibrated >= bounds[1]:
+        print(f"Warning: Parameter {param} with value {calibrated} is outside the bounds {bounds}") 
+    else:
+        print(f"Parameter {param} with value {calibrated} is within the bounds {bounds}")
 
-priors_bounds = {
-    "psi": (0.7, 0.99),
-    "alpha_G": (0.7, 0.99),
-    "alpha_E": (0.1, 0.5),
-    "beta_E": (0.5*beta0, 1.5 * beta0),
-    "xi_gamma": (0.7, 1.5)
-}
-print("Parameters to calibrate:")
-for i, param in enumerate(PARAMETERS):
-    print(f"{i}: {param}")
+n_histories = int(input("Enter the number of historical trajectories to generate for NPE data generation: "))
+priors_bounds = torch.tensor(priors_bounds, dtype=torch.float32)
+priors = BoxUniform(low=priors_bounds[:, 0], high=priors_bounds[:, 1])
 
-choosen = input("Enter the numbers of the parameters to calibrate, separated by commas (e.g., 0,2,4): ")
-choosen_indices = [int(x.strip()) for x in choosen.split(",")]
+n_stats = 6
+raw = np.ndarray(shape = (n_histories, T_hist + 1))
+npe_x = np.ndarray(shape = (n_histories, n_stats))
 
-parameters_to_calibrate = [PARAMETERS[i] for i in choosen_indices]
-print(f"Chosen parameters to calibrate: {parameters_to_calibrate}")
+if "prior_check" in argv:
+    plt.figure(figsize=(12, 8))
 
-bounds = torch.tensor([priors_bounds[param] for param in parameters_to_calibrate], dtype=torch.float32)
-prior = BoxUniform(low=bounds[:, 0], high=bounds[:, 1])
+priors_samples = priors.sample((n_histories, ))
+for i, draw in enumerate(priors_samples):
+    sim_parameters = rep_parameters(hist_params, parameters_to_calibrate, draw)
+    sim_initial = hist_initial
+    sim_out = run_monte_carlo(sim_parameters, sim_initial, T_hist, num_simulations=15)
+    if "prior_check" in argv:
+        plt.plot(sim_out, alpha=0.2, color="blue")
+    sim_stats = compute_statistics(sim_out)
+    npe_x[i, :] = sim_stats
+    raw[i, :] = sim_out
+    print(f"Completed {i+1}/{n_histories} simulations for NPE data generation", end="\r")
+print()
 
-n_draws = int(input("Enter the number of prior draws to generate (e.g., 1000): "))
-npe_x = np.ndarray(shape = (n_draws, T + 1))
-priors_draws = prior.sample((n_draws,))
+### saving
+np.savez("npe_data.npz", priors_samples=priors_samples, npe_x=npe_x, raw=raw)
 
-if not "raw" in argv:
-### statistics
-    avaiable_stats = ["mean_growth", "std_growth", "ar_1", "ar_2", "yearly_corr", "skewness_gdp"]
+if "prior_check" in argv:
+    plt.title("Simulated trajectories from the prior")
+    plt.xlabel("Time (quarters)")
+    plt.ylabel("Real GDP")
+    plt.savefig(f"pngs/prior_check_n{n_histories}_p{len(parameters_to_calibrate)}.png")
+    plt.show()
+    plt.clf()
 
-    print("Available summary statistics:")
-    for i, stat in enumerate(avaiable_stats):
-        print(f"{i}: {stat}")
-    choosen_stats = input("Enter the numbers of the summary statistics to use, separated by commas (e.g., 0,2,4): ")
-    choosen_stats_indices = [int(x.strip()) for x in choosen_stats.split(",")]
-    chosen_stats = [avaiable_stats[i] for i in choosen_stats_indices]
-    print(f"Chosen summary statistics: {chosen_stats}")
-    npe_stats = np.ndarray(shape = (n_draws, len(chosen_stats)))
+### NPE training
+npe = NPE(prior=priors)
+npe = npe.append_simulations(priors_samples, torch.tensor(npe_x, dtype=torch.float32))
+npe.train()
 
-for i, draw in enumerate(priors_draws):
-    sim_paramerters = rep_parameters(parameters, parameters_to_calibrate, draw)
-    x = run_monte_carlo(sim_paramerters, initial_conditions, T, num_simulations=10)
-    npe_x[i, :] = x
-    if not "raw" in argv:
-        npe_stats[i, :] = compute_statistics(x, chosen_stats)
-    print(f"Generated simulation {i+1}/{n_draws}", end="\r")
+posterior = npe.build_posterior()
+print()
 
-filename = f"sim_data_{n_draws}_draws.npz"
+observed_series = df[df["date"] < final_calibration]
+realized_future = df[df["date"] >= final_calibration]
 
-if "raw" in argv:
-    np.savez(filename, prior_draws=priors_draws.numpy(), raw=npe_x, to_calibrate = parameters_to_calibrate, bounds = bounds.numpy())
-    exit()
-    
-filename = f"sim_data_{n_draws}_draws_stats.npz"
-np.savez(filename, prior_draws=priors_draws.numpy(), raw=npe_x, to_calibrate = parameters_to_calibrate, bounds = bounds.numpy(), chosen_stats = chosen_stats)
+print(observed_series.tail())
+print(realized_future.head())
+
+assert len(observed_series) == T_hist
+assert len(realized_future) == T_forecast
+
+forecast_statistic = torch.tensor(compute_statistics(observed_series["real"].values))
+
+if "posterior_check" in argv:
+    pass
+
+if "sbc" in argv:
+    num_sbc_samples = 10
+    num_sbc_samples = 10
+    thetas = priors.sample((num_sbc_samples,))
+    params = [rep_parameters(final_params, parameters_to_calibrate, theta) for theta in thetas]
+    xs = [run_monte_carlo(param, final_initial, T_forecast, num_simulations=10) for param in params]
+    stats = [compute_statistics(x) for x in xs]
+    stats = torch.tensor(stats, dtype=torch.float32)
+    sbc_results = run_sbc(
+        posterior=posterior,
+        thetas=thetas,
+        xs = stats,
+        num_posterior_samples=100
+    )
+
+if "pairplot" in argv:
+
+    _ = pairplot(
+        posterior.sample((1000,), x = torch.tensor(forecast_statistic, dtype=torch.float32)),
+        points=np.array([final_params[param] for param in parameters_to_calibrate])[None, :],
+        labels=parameters_to_calibrate,
+        title = "Pairplot of the posterior samples with calibrated values"
+    )
+    plt.savefig(f"pngs/pairplot_n{n_histories}_p{len(parameters_to_calibrate)}.png")
+    plt.show()
+    plt.clf()
+
+if "post_check" in argv:
+    samples = posterior.sample((100, ), x = torch.tensor(npe_x, dtype=torch.float32))
+    plt.figure(figsize=(12, 8))
+    for i, sample in enumerate(samples):
+        sim_parameters = rep_parameters(hist_params, parameters_to_calibrate, sample)
+        sim_initial = hist_initial
+        sim_out = run_monte_carlo(sim_parameters, sim_initial, T_hist, num_simulations=15)
+        plt.plot(sim_out, alpha=0.2, color="green")
+    plt.title("Simulated trajectories from the posterior")
+    plt.xlabel("Time (quarters)")
+    plt.ylabel("Real GDP")
+    plt.savefig(f"pngs/posterior_check_n{n_histories}_p{len(parameters_to_calibrate)}.png")
+    plt.show()
+    plt.clf()
+
+
+abm_forecast = run_monte_carlo(final_params, final_initial, T_forecast, num_simulations=50)[1:]
+
+npe_forecast_params = posterior.sample((1000, ), x = forecast_statistic).mean(dim= 0)
+npe_forecast_params = rep_parameters(final_params, parameters_to_calibrate, npe_forecast_params)
+npe_forecast = run_monte_carlo(npe_forecast_params, final_initial, T_forecast, num_simulations=50)[1:]
+
+RMSFE_abm = np.sqrt(np.mean((abm_forecast - realized_future["real"].values)**2))
+RMSFE_npe = np.sqrt(np.mean((npe_forecast - realized_future["real"].values)**2))
+
+print(f"RMSFE of ABM forecast: {RMSFE_abm}")
+print(f"RMSFE of NPE forecast: {RMSFE_npe}")
+
+plt.figure(figsize=(12, 8))
+plt.plot(realized_future["date"], realized_future["real"], label="Real GDP", color="black")
+plt.plot(realized_future["date"], abm_forecast, label="ABM Forecast", color="blue")
+plt.plot(realized_future["date"], npe_forecast, label="NPE Forecast", color="orange")
+plt.title("Forecast comparison")
+plt.xlabel("Time (quarters)")
+plt.ylabel("Real GDP")
+plt.legend()
+plt.savefig(f"pngs/forecast_comparison_n{n_histories}_p{len(parameters_to_calibrate)}.png")
+plt.show()

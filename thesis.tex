@@ -37,7 +37,19 @@ Another application of the Dyer et. al. method is presented by Alves et. al. (20
 
 
 \section{Methodology}
-We will try to answer the question, whether Neural Posterior Estimation improves the calibration and forecasting performance of ABM models. As the underlying simulation engine, we use ABM model developed by Glielmo et al. (2023), based on Austrian economy in 2010Q1 being the reference period for most of the parameters. To calibrate the remaining few, we will use Neural Posterior Estimation method (Dyer. et al 2024) (NPE). 
+We will try to answer the question, whether Neural Posterior Estimation improves the calibration and forecasting performance of ABM models. 
+As the underlying simulation engine, we use ABM model developed by Poledna et al. (2023), 
+on Italian economy in $(T_1 = 2010Q1)$ and calibrated using data from 1995Q1 to 2009Q4. 
+The calibration method is described in the original paper.
+
+Since our analysis is based on forecasting performance, there are two steps:
+\begin{enumerate}
+    \item Posterior estimation using NPE method on hypothetical trajectories from 2010Q1 to 2016Q4.
+    \item Evaluation of forecasting performance of the model with parameters obtained from NPE, compared to the original calibration method and real data.
+\end{enumerate}
+
+\subsection{Posterior Estimation}
+
 
 
 \begin{table}[h]
@@ -56,7 +68,16 @@ We will try to answer the question, whether Neural Posterior Estimation improves
     \label{tab:parameters_to_estimate}
 \end{table}
 
-The simulation includes a variate of parameters, some of them stay constant, some vary over time. In order to answer the research question, we focused on five constant ones, that we think have significant influence over GDP growth. Moreover we, tried to identify those, for which standard calibration (used by Poledna et. al.) might be difficult. Due to lack of sufficient data or the nature of the parameter itself. Our choice of parameters is presented in Table. \ref{tab:parameters_to_estimate} and explanation together with GDP decomposition is below:
+
+The simulation includes a variate of parameters, 
+some of them stay constant, some vary over time. 
+In order to answer the research question, 
+we focused on five constant ones, 
+that we think have significant influence over GDP growth. 
+Moreover we, tried to identify those, 
+for which standard calibration (used by Poledna et. al.) might be difficult. 
+Due to lack of sufficient data or the nature of the parameter itself. 
+Our choice of parameters is presented in Table. \ref{tab:parameters_to_estimate} and explanation together with GDP decomposition is below:
 \begin{equation} \label{gdp_decom}
     Y = \text{Consumtion} + \text{Investment} + \text{Gov. expenditure} + \text{Net Exports}
 \end{equation}
@@ -64,15 +85,26 @@ The simulation includes a variate of parameters, some of them stay constant, som
     \item [$\psi$] - It reflects the fraction of households income devoted to consumption. We decided to include it in our analysis, since consumption is one of the major drivers of GDP growth. While at the same time, the fraction can be quite challenging to estimate. 
     \item [$\alpha^G$] - Second parameter dictates the persistance of GDP. Since Government expenditure is a significant portion of Austria GDP (more than 50\% in 2024), this parameter can identify this relation. 
 \end{enumerate}
+We want to find:
+\begin{equation}
+    p(\theta | x_{\text{obs}}) = \frac{p(x_{\text{obs}} | \theta) p(\theta)}{p(x_{\text{obs}})}
+\end{equation}
+But, the likelihood function $p(x | \theta)$ is intractable, we use NPE method. 
+With $x_{\text{obs}}$ refering to the observed trajectory of GDP growth from 2010Q1 to 2016Q4.
+The NPE analysis, as described by Dyer et. al. starts by choosing 
+appropriate priors for the choosen parameters. 
+Following the modeling choice of Alves et. al., 
+and lack of strong signals to deviate,
+we decided to use uniform priors $(p(\theta))$ with bounds presented in 
+table \ref{tab:parameters_to_estimate}. 
 
+With the given priors, we sample $N = $ paremeter draws $\{ \theta_i \}_{i = 1}^N$.
+For each of those, we run $M = 10$ simulations of the ABM, starting from $T_1$ to $T_2 = 2016Q4$.
+Those $M$ simulations are used to obtain the mean trajectory \eqref{eq:batch_updating} of the model for given parameter draw $\theta_i$, which we denote as $x_i$. 
 
-The NPE analysis, as described by Dyer et. al. starts by choosing appropriate priors for the choosen parameters. Following the modeling choice of Alves et. al., and lack of strong signals to deviate, we decided to use uniform priors with bounds presented in table \ref{tab:parameters_to_estimate}. Thus, we rely on strong identification in the posterior, to get meaningful results. 
-
-Given the priors, we construct the training dataset for NPE with (N = ) data points. First we draw a join sample from the posteriors ($\theta_i$), and then run a number of simulations $M = 10$ with those 5 parameters changed, in order to filter out some noise from the ABM model. From each simulation run, we extract GDP forecasts $(x_i^{m} \in \mathbb{R}^T$ and average over the batch: 
 \begin{equation} \label{eq:batch_updating}
     x_i = \frac{1}{M} \sum_{m = 1}^M x_{i}^m 
 \end{equation}. 
-
 \begin{table}[h]
     \centering
     \begin{tabular}{l|r}
@@ -90,11 +122,15 @@ Given the priors, we construct the training dataset for NPE with (N = ) data poi
     \label{tab:summary_statisc}
 \end{table}
 
-We obtain N pairs $\{ \theta_i, x_i \}$. Since $x_i$ is a high - dimensional vector (with the dimension being the forecasting horizon of the simulation), we use a set of handcrafted statistics ($n = 10$, table. \ref{tab:summary_statisc}) to reduce variance in the posterior. Moreover, since we are interested in forecasting performance, those statistics can offer more insights about underlying simulation, than raw data. Without those, the NPE might learn spurious relations, or not converge quick enough. 
+We obtain $N$ pairs $\{ \theta_i, x_i \}$, with $x_i$ being a high - dimensional vector (with the dimension being the forecasting horizon for the training period $T_{train} = T_2 - T_1$ in quaters).
+In order to reduce the dimensionality of the problem, we use summary statistics $s(x_i)$, which transform the original trajectory into a lower dimensional space.
+
+
 \begin{equation}
     s(x_i) : \mathbb{R}^T \to \mathbb{R}^n
 \end{equation}
-Therefore, the conditional density estimation problem $p(\theta | x)$ transforms into $p(\theta | s(x))$. Which we estimate using extension of normalizing flows (Tabak and Vanden-Eijnden, 2010; Tabak and Turner, 2013; Rezende and Mohamed, 2015) called Masked Autoregressive Flow (Papamakarios and Murray, 2016; Lueckmann et al., 2017; Papamakarios et al., 2019; Greenberg et al., 2019). 
+Therefore, the conditional density estimation problem $p(\theta | x)$ transforms into $p(\theta | s(x))$. 
+Which we estimate using extension of normalizing flows (Tabak and Vanden-Eijnden, 2010; Tabak and Turner, 2013; Rezende and Mohamed, 2015) called Masked Autoregressive Flow (Papamakarios and Murray, 2016; Lueckmann et al., 2017; Papamakarios et al., 2019; Greenberg et al., 2019). 
 
 \subsection{Evaluation of the posteriors}
 As with other Bayesian Methods, evaluating the sensibility of the posterior is a crucial step in the process. 
@@ -102,7 +138,8 @@ Since we construct a conditional posterior used for forecasting, we use historic
 With those to condition on, we approach the evaluation in two steps, with sampling from the posterior $p(\theta | s(x_{obs}))$.
 First we check the posterior itself using conditional densities plots and simulation based calibration - SBC (Talts et. al., 2018 and Cook et al., 2006) to asses its validity. 
 Then we take the mean of the posterior to obtain parameter values used to compute final ABM forecast. 
-It is then compared (RMSFE) to a) real GDP growth data; b) forecasts by the standard calibration method used in the original paper.
+It is then compared (using RMSFE) to a) real GDP growth data; b) forecast obtained from the original calibration method based on $T_2$. 
+The RMSFE is computed for the forecasting horizon $T_{\text{forecast}} = 2017Q1 - 2019Q4$.
 
 \section{Results}
 
