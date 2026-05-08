@@ -41,8 +41,8 @@ end
 function calibrate(year, month, day) 
     cal = BeforeIT.ITALY_CALIBRATION
     calibration_date = DateTime(year, month, day)
-    println("Calibrating model with date: ", calibration_date)
     parameters, initial_conditions = BeforeIT.get_params_and_initial_conditions(cal, calibration_date; scale = 0.0001)
+    println("Calibrating model with date: ", calibration_date)
     return parameters, initial_conditions
 end
 end # module JuliaModel

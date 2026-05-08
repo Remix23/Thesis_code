@@ -70,11 +70,11 @@ def compute_statistics (sim_out):
 ### initial calibration
 initial_calibration = datetime(2010, 3, 31)
 
-n = 5 # number of years to simulate
-T_hist = 4 * n # quaters
-final_calibration = datetime(initial_calibration.year + T_hist // 4, initial_calibration.month, initial_calibration.day)
+n = 6 # number of years to simulate -> 5 years
+T_hist = 4 * n - 1 # quaters
+final_calibration = datetime(initial_calibration.year + T_hist // 4, 12, initial_calibration.day)
 
-T_forecast = 4 * 5 # 5 years forecast
+T_forecast = 4 * 4 # 5 years forecast
 date_forecast = datetime(final_calibration.year + T_forecast // 4, final_calibration.month, final_calibration.day)
 ### real data
 csv_data = pd.read_csv("data/italy_real_gdp.csv", parse_dates=["observation_date"])
@@ -84,6 +84,7 @@ quarterly_dates, bit = [np.array(x) for x in jl.get_real()]
 n = len(quarterly_dates)
 df = pd.DataFrame({"date": quarterly_dates.flatten(), "real": bit.flatten()})
 df = df[df["date"] >= initial_calibration]
+df = df[df["date"] <= date_forecast]
 
 hist_params, hist_initial = jl.calibrate(initial_calibration.year, initial_calibration.month, initial_calibration.day)
 
@@ -152,13 +153,10 @@ npe.train()
 posterior = npe.build_posterior()
 print()
 
-observed_series = df[df["date"] < final_calibration]
-realized_future = df[df["date"] >= final_calibration]
+observed_series = df[df["date"] <= final_calibration]
+realized_future = df[df["date"] > final_calibration]
 
-print(observed_series.tail())
-print(realized_future.head())
-
-assert len(observed_series) == T_hist
+assert len(observed_series) == T_hist + 1
 assert len(realized_future) == T_forecast
 
 forecast_statistic = torch.tensor(compute_statistics(observed_series["real"].values))
@@ -222,9 +220,10 @@ print(f"RMSFE of ABM forecast: {RMSFE_abm}")
 print(f"RMSFE of NPE forecast: {RMSFE_npe}")
 
 plt.figure(figsize=(12, 8))
-plt.plot(realized_future["date"], realized_future["real"], label="Real GDP", color="black")
-plt.plot(realized_future["date"], abm_forecast, label="ABM Forecast", color="blue")
-plt.plot(realized_future["date"], npe_forecast, label="NPE Forecast", color="orange")
+plt.plot(range(1, T_forecast + 1), realized_future["real"], label="Real GDP", color="black")
+plt.plot(range(1, T_forecast + 1), abm_forecast, label="ABM Forecast", color="blue")
+plt.plot(range(1, T_forecast + 1), npe_forecast, label="NPE Forecast", color="orange")
+plt.xticks(range(1, T_forecast + 1), realized_future["date"].dt.strftime("%Y-%m").values, rotation=45)
 plt.title("Forecast comparison")
 plt.xlabel("Time (quarters)")
 plt.ylabel("Real GDP")
