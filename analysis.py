@@ -123,6 +123,10 @@ def load_data(file_path):
     if not "npe_x" in data.files:
         print("Warning: 'npe_x' not found in data file. It will be set to None.")
         data["npe_x"] = None
+    print("Parameters: ")
+    for param, value in zip(data["parameters_to_calibrate"], data["bounds"]):
+        print(f"{param}: {value}")
+
     return data["priors_samples"], data["npe_x"], data["raw"], data["parameters_to_calibrate"], data["bounds"]
 
 data_folder = path.join(getcwd(), "data")
@@ -234,11 +238,14 @@ def forecast (posterior, observed_series, final_params, final_initial, stat_keys
     npe_forecast = run_monte_carlo(npe_forecast_params, final_initial, T_forecast, num_simulations=100)[1:]
     return npe_forecast
 
-def plot_forecasts (forecasts : dict[str, np.ndarray], realized_future, final_calibration, date_forecast, final_params, parameters_to_calibrate, bounds):
+def plot_forecasts (forecasts : dict[str, np.ndarray], realized_future, parameters_to_calibrate, bounds):
     plt.figure(figsize=(12, 8))
     plt.plot(range(1, T_forecast + 1), realized_future["real"], label="Real GDP", color="black")
+    rolling_rsmfes = {}
     for key, forecast in forecasts.items():
-        print(f"RMSFE of {key} forecast: {compute_rmsfe(forecast, realized_future)}")
+        rmsfe = compute_rmsfes(forecast, realized_future["real"].values)
+        rolling_rsmfes[key] = rmsfe
+        print(f"RMSFE of {key} forecast: {rmsfe[-1]:.4f}")
         plt.plot(range(1, T_forecast + 1), forecast, label=f"{key} Forecast")
     plt.xticks(range(1, T_forecast + 1), realized_future["date"].dt.strftime("%Y-%m").values, rotation=45)
     plt.title("Forecast comparison")
@@ -247,40 +254,34 @@ def plot_forecasts (forecasts : dict[str, np.ndarray], realized_future, final_ca
     plt.legend()
     plt.savefig(f"pngs/forecast_comparison_n{n_hist}_p{', '.join(parameters_to_calibrate)}_bounds{', '.join(str(b) for b in bounds)}.png")
     plt.show()
+    return rolling_rsmfes
 
-def compute_rmsfe (forecast, realized_future):
-    return np.sqrt(np.mean((forecast - realized_future["real"].values)**2))
+def compute_rmsfes (forecast, realized):
+    rolling_differences = [(forecast[:i] - realized[:i])**2 for i in range(1, len(forecast) + 1)]
+    means = np.array(list(map(np.mean, rolling_differences)))
+    return np.sqrt(means)
 
 ### checks
 s1 = ["mean", "std", "yearly_corr", "ar1_coeff", "min", "max", "skewness"]
+s1_prime = ["mean", "std", "yearly_corr", "ar1_coeff", "min", "max", "skewness", "kurtosis", "recession_count"]
 s2 = ["mean", "std", "yearly_corr", "ar1_coeff", "ar2_coeff", "min", "max", "skewness", "kurtosis"]
 s3 = ["mean", "std", "yearly_corr", "ar1_coeff", "skewness", "kurtosis", "quantile_25", "quantile_50", "quantile_75", "recession_count"]
 
+versions = [s1]
 
-p1 = train_npe_statistics(priors, priors_samples, raw, s1)
-p2 = train_npe_statistics(priors, priors_samples, raw, s2)
-p3 = train_npe_statistics(priors, priors_samples, raw, s3)
-
-p1_forecast = forecast(p1, observed_series["real"].values, final_params, final_initial, s1)
-p2_forecast = forecast(p2, observed_series["real"].values, final_params, final_initial, s2)
-p3_forecast = forecast(p3, observed_series["real"].values, final_params, final_initial, s3)
-
-forecast_statistic = torch.tensor(compute_statistics(observed_series["real"].values))
+ps = [train_npe_statistics(priors, priors_samples, raw, s) for s in versions]
+forecasts = {",".join(to_short_names(s)): forecast(p, observed_series["real"].values, final_params, final_initial, s) for p, s in zip(ps, versions)}
 
 abm_forecast = run_monte_carlo(final_params, final_initial, T_forecast, num_simulations=100)[1:]
+forecasts["ABM_base"] = abm_forecast
 
 if npe_x_base is not None:
+    forecast_statistic = torch.tensor(compute_statistics(observed_series["real"].values))
     npe_forecast_params = posterior.sample((1000, ), x = forecast_statistic).mean(dim= 0)
     npe_forecast_params = rep_parameters(final_params, parameters_to_calibrate, npe_forecast_params)
     npe_forecast = run_monte_carlo(npe_forecast_params, final_initial, T_forecast, num_simulations=100)[1:]
 
-forecasts = {
-    "ABM": abm_forecast,
-    "NPE_base": npe_forecast,
-    ",".join(to_short_names(s1)): p1_forecast,
-    ",".join(to_short_names(s2)): p2_forecast,
-    ",".join(to_short_names(s3)): p3_forecast
-}
+if npe_x_base is not None:
+    forecasts["NPE_base"] = npe_forecast
 
-
-plot_forecasts(forecasts, realized_future, final_calibration, date_forecast, final_params, parameters_to_calibrate, bounds)
+rolling_rsmfes = plot_forecasts(forecasts, realized_future, parameters_to_calibrate, bounds)
