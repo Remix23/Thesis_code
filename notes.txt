@@ -1,0 +1,9 @@
+the file 10K_four_params is with:
+priors_bounds = [
+    (0.7, 0.99), # psi
+    (0.8, .999), # alpha_G,
+    # (0.5, .99), # alpha_E
+    (.7, 1.5),    # xi_gamma
+]
+
+
