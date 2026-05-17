@@ -26,6 +26,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 
+torch.manual_seed(0)
+np.random.seed(0)
+
 def rep_parameters(parameters, parameters_to_calibrate, draw):
     sim_paramerters = parameters.copy()
     for param, value in zip(parameters_to_calibrate, draw.tolist()):
@@ -49,7 +52,13 @@ def findar_p (times_series, p):
     ols = np.linalg.lstsq(lagged, target, rcond=None)
     return ols[0]
 
-to_growth_rate = lambda x: np.diff(np.log(x))
+to_log_growth = lambda x: np.diff(np.log(x))
+to_log = lambda x: np.log(x)
+to_growth_rate = lambda x: np.diff(x) / x[:, :-1]
+
+### x - (n_trajectories, T_hist + 1)
+# we want 
+to_cnn = lambda x: np.concatenate([to_log(x)[:, 1:], to_growth_rate(x), np.diff(x)], axis=1)
 
 STATISTICS = {
     "mean": lambda sim_out: np.mean(sim_out),
@@ -88,7 +97,7 @@ to_short_names = lambda keys: [short_names[key] for key in keys]
 def compute_statistics (sim_out):
     # compute summary statistics from the simulated data
     # for example, we can compute the mean and standard deviation of real GDP
-    growth_rates = to_growth_rate(sim_out)
+    growth_rates = to_log_growth(sim_out)
 
     mean_gdp = np.mean(sim_out)
     mean_gdprowth = np.mean(growth_rates)
@@ -108,13 +117,31 @@ def compute_statistics (sim_out):
     return np.array([mean_gdprowth, std_gdprowth, yearly_corr, ar1_coeff, ar2_coeff, mini, maxi, skewness_gdp])
 
 def compute_statistics_dict (sim_out, keys = None):
-    x = to_growth_rate(sim_out)
+    x = to_log_growth(sim_out)
     if keys is None:
         keys = STATISTICS.keys()
     return np.array([STATISTICS[key](x) for key in keys])
 
 ### load data
-def load_data(file_path):
+def load_data():
+    data_folder = path.join(getcwd(), "data")
+    all_npe = listdir(data_folder) + listdir(getcwd())
+
+    files = [f for f in all_npe if f.endswith(".npz")]
+    if not files:
+        raise FileNotFoundError("No .npz files found in the data folder or current directory.")
+
+    print("Available .npz files:")
+    for i, file in enumerate(files):
+        print(f"{i + 1}. {file} | files: {np.load(path.join(data_folder, file)).files if file in listdir(data_folder) else np.load(path.join(getcwd(), file)).files}")
+
+    file_index = int(input("Enter the number corresponding to the file you want to load: ")) - 1
+
+    if file_index < 0 or file_index >= len(files):
+        raise ValueError("Invalid file number selected.")
+
+    file_path = path.join(data_folder, files[file_index]) if files[file_index] in listdir(data_folder) else path.join(getcwd(), files[file_index])
+
     data = np.load(file_path)
     required_keys = ["priors_samples", "raw", "parameters_to_calibrate", "bounds"]
     print(f"Loaded data from {file_path} with keys: {list(data.files)}")
@@ -122,69 +149,38 @@ def load_data(file_path):
         raise ValueError(f"Data file must contain the following keys: {required_keys}")
     if not "npe_x" in data.files:
         print("Warning: 'npe_x' not found in data file. It will be set to None.")
-        data["npe_x"] = None
+        dat = None
+    else:
+        dat = data["npe_x"]
     print("Parameters: ")
     for param, value in zip(data["parameters_to_calibrate"], data["bounds"]):
         print(f"{param}: {value}")
+    return data["priors_samples"], dat, data["raw"], data["parameters_to_calibrate"], data["bounds"]
 
-    return data["priors_samples"], data["npe_x"], data["raw"], data["parameters_to_calibrate"], data["bounds"]
+def remove_outliers(data: np.ndarray, m: float = 2.0, stat_names: list = None) -> np.ndarray:
+    ### data is suppoer to 2dim, returns a boolean mask of the same shape as data, where True indicates that the corresponding value in data is not an outlier, and False indicates that it is an outlier.
+    q3 = np.percentile(data, 75, axis=0)
+    q1 = np.percentile(data, 25, axis=0)
+    iqr = q3 - q1
+    lower_bound = q1 - m * iqr
+    upper_bound = q3 + m * iqr
+    out = np.any((data < lower_bound) | (data > upper_bound), axis=1)
+    num_of_outliers = np.sum(out)
+    print(f"Removing {num_of_outliers} outliers from the data [from {data.shape[0]} samples]")
+    for stat, out_counts in enumerate(np.sum((data < lower_bound) | (data > upper_bound), axis=0)):
+        if stat_names is not None:
+            print(f"  - {to_short_names(stat_names)[stat]}: {out_counts} outliers")
+        else:
+            print(f"  - {stat}: {out_counts} outliers")
+    return ~out
 
-data_folder = path.join(getcwd(), "data")
-all_npe = listdir(data_folder) + listdir(getcwd())
-
-files = [f for f in all_npe if f.endswith(".npz")]
-if not files:
-    raise FileNotFoundError("No .npz files found in the data folder or current directory.")
-
-print("Available .npz files:")
-for i, file in enumerate(files):
-    print(f"{i + 1}. {file} | files: {np.load(path.join(data_folder, file)).files if file in listdir(data_folder) else np.load(path.join(getcwd(), file)).files}")
-
-file_index = int(input("Enter the number corresponding to the file you want to load: ")) - 1
-
-if file_index < 0 or file_index >= len(files):
-    raise ValueError("Invalid file number selected.")
-
-file_path = path.join(data_folder, files[file_index]) if files[file_index] in listdir(data_folder) else path.join(getcwd(), files[file_index])
-priors_samples, npe_x_base, raw, parameters_to_calibrate, bounds = load_data(file_path)
-parameters_to_calibrate = parameters_to_calibrate.tolist()
-
-### initial calibration
-initial_calibration = datetime(2010, 3, 31)
-
-n = 6 # number of years to simulate -> 5 years
-T_hist = 4 * n - 1 # quaters
-final_calibration = datetime(initial_calibration.year + T_hist // 4, 12, initial_calibration.day)
-
-T_forecast = 4 * 4 # 4 years forecast
-date_forecast = datetime(final_calibration.year + T_forecast // 4, final_calibration.month, final_calibration.day)
-### real data
-csv_data = pd.read_csv("data/italy_real_gdp.csv", parse_dates=["observation_date"])
-csv_data = csv_data[csv_data["observation_date"] >= initial_calibration]
-quarterly_dates, bit = [np.array(x) for x in jl.get_real()]
-
-n = len(quarterly_dates)
-df = pd.DataFrame({"date": quarterly_dates.flatten(), "real": bit.flatten()})
-df = df[df["date"] >= initial_calibration]
-df = df[df["date"] <= date_forecast]
-
-observed_series = df[df["date"] <= final_calibration]
-realized_future = df[df["date"] > final_calibration]
-
-assert len(observed_series) == T_hist + 1
-assert len(realized_future) == T_forecast
-
-hist_params, hist_initial = jl.calibrate(initial_calibration.year, initial_calibration.month, initial_calibration.day)
-
-final_params, final_initial = jl.calibrate(final_calibration.year, final_calibration.month, final_calibration.day)
-
-n_hist = priors_samples.shape[0]
-
-priors = BoxUniform(low=torch.tensor(bounds)[:, 0], high=torch.tensor(bounds)[:, 1])
-
-def train_npe_statistics (priors, prior_samples, raw, stat_keys):
+def train_npe_statistics (priors, prior_samples, raw, stat_keys, rem_out = True):
     npe = NPE(prior=priors)
     npe_x = np.apply_along_axis(lambda sim_out: compute_statistics_dict(sim_out, stat_keys), 1, raw)
+    if rem_out:
+        idx = remove_outliers(npe_x, m = 8.0, stat_names=stat_keys)
+        npe_x = npe_x[idx, :]
+        prior_samples = prior_samples[idx, :]
     npe_x = torch.tensor(npe_x, dtype=torch.float32)
     samples = torch.tensor(prior_samples, dtype=torch.float32)
     net = npe.append_simulations(samples, npe_x).train()
@@ -201,21 +197,13 @@ def train_npe_nn (priors, prior_samples, raw, nn):
     npe_x = torch.tensor(raw, dtype=torch.float32)
     samples = torch.tensor(prior_samples, dtype=torch.float32)
     net = npe.append_simulations(samples, npe_x).train()
-    posterior = npe.build_posterior()
-    return posterior
+    post = npe.build_posterior()
+    return post
 
-### NPE training
-if npe_x_base is not None:
-    npe = NPE(prior=priors)
-    npe = npe.append_simulations(torch.tensor(priors_samples, dtype=torch.float32), torch.tensor(npe_x_base, dtype=torch.float32))
-    npe.train()
-
-    posterior = npe.build_posterior()
-    print()
-
-def pplot_stat (posterior, n_histories, observed_series, validation_series, final_params, stat_keys):
-    forecast_statistics = torch.tensor(compute_statistics_dict(observed_series, stat_keys), dtype=torch.float32)
-    posterior_samples = posterior.sample((1000,), x = forecast_statistics)
+def pplot_stat (posterior, n_histories, condition, final_params, stat_keys = None):
+    if stat_keys is None:
+        stat_keys = []
+    posterior_samples = posterior.sample((1000,), x = condition)
     _ = pairplot(
         posterior_samples,
         points=np.array([final_params[param] for param in parameters_to_calibrate])[None, :],
@@ -223,8 +211,8 @@ def pplot_stat (posterior, n_histories, observed_series, validation_series, fina
         limits = torch.tensor(bounds, dtype=torch.float32),
         title = "Pairplot of the posterior samples with calibrated values"
     )
-    plt.show()
-    plt.savefig(f"pngs/pairplot_n{n_histories}_p{len(parameters_to_calibrate)}_stats_{', '.join(stat_keys)}.png")
+    plt.savefig(f"pngs/pairplot_n{n_histories}_p{len(parameters_to_calibrate)}_{",".join(to_short_names(stat_keys))}.png")
+    plt.close()
 
 ### check later for nn embeddings
 def forecast (posterior, observed_series, final_params, final_initial, stat_keys = None):
@@ -261,27 +249,148 @@ def compute_rmsfes (forecast, realized):
     means = np.array(list(map(np.mean, rolling_differences)))
     return np.sqrt(means)
 
-### checks
-s1 = ["mean", "std", "yearly_corr", "ar1_coeff", "min", "max", "skewness"]
-s1_prime = ["mean", "std", "yearly_corr", "ar1_coeff", "min", "max", "skewness", "kurtosis", "recession_count"]
-s2 = ["mean", "std", "yearly_corr", "ar1_coeff", "ar2_coeff", "min", "max", "skewness", "kurtosis"]
-s3 = ["mean", "std", "yearly_corr", "ar1_coeff", "skewness", "kurtosis", "quantile_25", "quantile_50", "quantile_75", "recession_count"]
+if __name__ == "__main__":
 
-versions = [s1]
+    priors_samples, npe_x_base, raw, parameters_to_calibrate, bounds = load_data()
+    parameters_to_calibrate = parameters_to_calibrate.tolist()
 
-ps = [train_npe_statistics(priors, priors_samples, raw, s) for s in versions]
-forecasts = {",".join(to_short_names(s)): forecast(p, observed_series["real"].values, final_params, final_initial, s) for p, s in zip(ps, versions)}
+    ### initial calibration
+    initial_calibration = datetime(2010, 3, 31)
 
-abm_forecast = run_monte_carlo(final_params, final_initial, T_forecast, num_simulations=100)[1:]
-forecasts["ABM_base"] = abm_forecast
+    n = 6 # number of years to simulate -> 5 years
+    T_hist = 4 * n - 1 # quaters
+    final_calibration = datetime(initial_calibration.year + T_hist // 4, 12, initial_calibration.day)
 
-if npe_x_base is not None:
-    forecast_statistic = torch.tensor(compute_statistics(observed_series["real"].values))
-    npe_forecast_params = posterior.sample((1000, ), x = forecast_statistic).mean(dim= 0)
-    npe_forecast_params = rep_parameters(final_params, parameters_to_calibrate, npe_forecast_params)
-    npe_forecast = run_monte_carlo(npe_forecast_params, final_initial, T_forecast, num_simulations=100)[1:]
+    T_forecast = 4 * 4 # 4 years forecast
+    date_forecast = datetime(final_calibration.year + T_forecast // 4, final_calibration.month, final_calibration.day)
+    ### real data
+    csv_data = pd.read_csv("data/italy_real_gdp.csv", parse_dates=["observation_date"])
+    csv_data = csv_data[csv_data["observation_date"] >= initial_calibration]
+    quarterly_dates, bit = [np.array(x) for x in jl.get_real()]
 
-if npe_x_base is not None:
-    forecasts["NPE_base"] = npe_forecast
+    n = len(quarterly_dates)
+    df = pd.DataFrame({"date": quarterly_dates.flatten(), "real": bit.flatten()})
+    df = df[df["date"] >= initial_calibration]
+    df = df[df["date"] <= date_forecast]
 
-rolling_rsmfes = plot_forecasts(forecasts, realized_future, parameters_to_calibrate, bounds)
+    observed_series = df[df["date"] <= final_calibration]
+    realized_future = df[df["date"] > final_calibration]
+
+    assert len(observed_series) == T_hist + 1
+    assert len(realized_future) == T_forecast
+
+    hist_params, hist_initial = jl.calibrate(initial_calibration.year, initial_calibration.month, initial_calibration.day)
+
+    final_params, final_initial = jl.calibrate(final_calibration.year, final_calibration.month, final_calibration.day)
+
+    n_hist = priors_samples.shape[0]
+
+    priors = BoxUniform(low=torch.tensor(bounds)[:, 0], high=torch.tensor(bounds)[:, 1])
+
+    ### NPE training
+    if npe_x_base is not None:
+        npe = NPE(prior=priors)
+        npe = npe.append_simulations(torch.tensor(priors_samples, dtype=torch.float32), torch.tensor(npe_x_base, dtype=torch.float32))
+        npe.train()
+
+        posterior = npe.build_posterior()
+        print()
+
+    ### statistics
+    s1 = ["mean", "std", "yearly_corr", "ar1_coeff", "min", "max", "skewness", "quantile_50", "recession_count"]
+    s1_prime = ["mean", "std", "yearly_corr", "ar1_coeff", "min", "skewness", "kurtosis", "recession_count"]
+    s2 = ["mean", "std", "yearly_corr", "ar1_coeff", "ar2_coeff", "min", "skewness", "kurtosis"]
+    s3 = ["mean", "std", "yearly_corr", "ar1_coeff", "skewness", "kurtosis", "quantile_25", "quantile_50", "quantile_75", "recession_count"]
+
+    versions = [s1, s1_prime]
+
+    ps = [train_npe_statistics(priors, priors_samples, raw, s) for s in versions]
+
+    if "pp" in argv:
+        ### pairplots for statistics-based NPE
+        for p, s in zip(ps, versions):
+            pplot_stat(p, n_hist, compute_statistics_dict(observed_series["real"].values, s), final_params, s)
+
+    if "ppc" in argv:
+        ### for statistics
+        for p, s in zip(ps, versions):
+            stats = compute_statistics_dict(observed_series["real"].values, s)
+            samples = p.sample((100,), x = stats)
+            stats_out = np.array([compute_statistics_dict(run_monte_carlo(rep_parameters(final_params, parameters_to_calibrate, sample.numpy()), final_initial, T_hist, num_simulations=10), s) for sample in samples])
+            _ = pairplot(
+                stats_out,
+                points=stats[None, :],
+                labels=to_short_names(s),
+                title = f"Posterior predictive check for statistics {', '.join(s)}"
+            )
+            plt.savefig(f"pngs/ppc_n{n_hist}_s{', '.join(s)}.png")
+            plt.close()
+        
+
+    if "sbc" in argv:
+        num_sbc_saples = 100 * len(parameters_to_calibrate)
+        prior_samples_sbc = priors.sample((num_sbc_saples,))
+        for p, s in zip(ps, versions):
+            print(f"Running SBC for statistic set: {', '.join(to_short_names(s))}")
+            stats = np.array([compute_statistics_dict(run_monte_carlo(rep_parameters(hist_params, parameters_to_calibrate, sample.numpy()), hist_initial, T_hist, num_simulations=10), s) for sample in prior_samples_sbc])
+            stats = torch.tensor(stats, dtype=torch.float32)
+            sbc_results = run_sbc(
+                prior_samples_sbc, 
+                stats, 
+                p,
+                num_posterior_samples=1000,
+            )
+        
+    ### networking embedding
+    # CCN
+    ### with raw output
+    if "nn" in argv:
+
+        n1 = CausalCNNEmbedding(
+            input_shape=(T_hist + 1, ), # length of the time series
+            num_conv_layers=2,
+            pool_kernel_size=3,
+            output_dim=10,
+        )
+        p_n1 = train_npe_nn(priors, priors_samples, raw, n1)
+
+        ### three channels - log, growth rate, difference (as detrended)
+        n2 = CausalCNNEmbedding(
+            input_shape=(T_hist, ), ### because of the difference
+            in_channels=3,
+            num_conv_layers=2,
+            pool_kernel_size=3,
+            output_dim=10,
+        )
+
+        p_n2 = train_npe_nn(priors, priors_samples, to_cnn(raw), n2)
+
+    if "forecast" in argv:
+        forecasts = {",".join(to_short_names(s)): forecast(p, observed_series["real"].values, final_params, final_initial, s) for p, s in zip(ps, versions)}
+        
+        if "nn" in argv:
+            n1_forecast = forecast(p_n1, observed_series["real"].values, final_params, final_initial)
+            forecasts["CNN_embedding_n1"] = n1_forecast
+            
+            n2_forecast = forecast(p_n2, to_cnn(np.reshape(observed_series["real"].values, (1, -1))), final_params, final_initial)
+            forecasts["CNN_embedding_n2"] = n2_forecast
+
+        abm_forecast = run_monte_carlo(final_params, final_initial, T_forecast, num_simulations=100)[1:]
+        forecasts["ABM_base"] = abm_forecast
+
+        if npe_x_base is not None:
+            forecast_statistic = torch.tensor(compute_statistics(observed_series["real"].values))
+            npe_forecast_params = posterior.sample((1000, ), x = forecast_statistic).mean(dim= 0)
+            npe_forecast_params = rep_parameters(final_params, parameters_to_calibrate, npe_forecast_params)
+            npe_forecast = run_monte_carlo(npe_forecast_params, final_initial, T_forecast, num_simulations=100)[1:]
+
+        if npe_x_base is not None:
+            forecasts["NPE_base"] = npe_forecast
+
+        rolling_rsmfes = plot_forecasts(forecasts, realized_future, parameters_to_calibrate, bounds)
+
+
+    ### pairplots
+    if "pp_nn" in argv:
+        pplot_stat(p_n1, n_hist, observed_series["real"].values, final_params)
+        pplot_stat(p_n2, n_hist, to_cnn(np.reshape(observed_series["real"].values, (1, -1))), final_params)
