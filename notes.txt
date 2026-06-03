@@ -6,4 +6,10 @@ priors_bounds = [
     (.7, 1.5),    # xi_gamma
 ]
 
+Neural networks:
+
+a) Standard 1D CNN with raw GDP input
+b) 1D CNN with two channels (log GDP, growh rate)
+c) RNN as Dryer et al
+d) 
 

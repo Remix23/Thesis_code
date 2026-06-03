@@ -1,5 +1,6 @@
 from torch import nn
 from torch import cat
+from torch import randn
 
 implemented = ["elman", "gru"]
 
@@ -12,8 +13,8 @@ class MLP(nn.Module):
 # log diff GDP 
 # detrended GDP
 class CNN_GDP(nn.Module):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, num_summaries = 8,**kwargs):
+        super().__init__(**kwargs)
 
         self.conv = nn.Sequential(
             nn.Conv1d(3, 16, kernel_size=3, padding=1),
@@ -24,7 +25,7 @@ class CNN_GDP(nn.Module):
         )
 
         self.summary_net = nn.Sequential(
-            nn.Linear(8, 16),
+            nn.Linear(num_summaries, 16),
             nn.ReLU()
         )
 
@@ -34,11 +35,12 @@ class CNN_GDP(nn.Module):
             nn.Linear(64, 32)
         )
 
-    def forward(self, x, summaries):
+    def forward(self, x):
         h1 = self.conv(x).squeeze(-1)
-        h2 = self.summary_net(summaries)
-        h = cat([h1, h2], dim=-1)
-        return self.final(h)
+		# compute summaries
+		# h2 = self.summary_net(x.mean(dim=-1))
+		#h = cat([h1, h2], dim=-1)
+        return self.final(h1)
 
 class RNN(nn.Module):
 
@@ -67,10 +69,19 @@ class RNN(nn.Module):
 		self.relu = nn.ReLU()
 
 	def forward(self, x):
-
 		out, _ = self.mod(x)
-		_x = out[:, -1, :]
+		_x = out
 		for layer in self._layers:
 			_x = self.relu(layer(_x))
 		return self.final(_x)
 	
+if __name__ == "__main__":
+	rnn = RNN(
+		input_dim=10,
+		flavour="elman",
+		hidden_dim=32,
+		num_layers=2,
+		mlp_dims=12
+	)
+	print(rnn.forward(randn(1, 10)))
+	print(rnn)

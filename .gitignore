@@ -1,9 +1,14 @@
 venv
 video
 sbi-logs
+papers
+data
 *.aux
 *.fdb_latexmk
 *.fls
 *.log
 *.synctex.gz
 *.npz
+*.pkl
+*.zip
+__pycache__

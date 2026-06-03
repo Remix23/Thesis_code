@@ -56,7 +56,7 @@ date_forecast = datetime(
     final_calibration.day,
 )
 ### real data
-csv_data = pd.read_csv("data/italy_real_gdp.csv", parse_dates=["observation_date"])
+csv_data = pd.read_csv("data_npz/italy_real_gdp.csv", parse_dates=["observation_date"])
 csv_data = csv_data[csv_data["observation_date"] >= initial_calibration]
 quarterly_dates, bit = [np.array(x) for x in jl.get_real()]
 
@@ -76,13 +76,14 @@ final_params, final_initial = jl.calibrate(
 beta0 = hist_params["beta_E"]
 
 # parameters_to_calibrate = ["psi", "alpha_G", "beta_E", "alpha_E", "xi_gamma"]
-parameters_to_calibrate = ["psi", "alpha_G", "alpha_E"]
+parameters_to_calibrate = ["psi", "alpha_G", "beta_E", "alpha_E"]
 
 priors_bounds = [
-    (0.8, 0.99),  # psi
-    (0.8, 0.99),  # alpha_G,
-    # (0.5*beta0, 1.5 * beta0), # beta_E
-    (0.8, 0.99),  # alpha_E
+    (0.9, 0.99),  # psi
+    (0.9, 0.99),  # alpha_G,
+    (0.7*beta0, 1.3 * beta0), # beta_E
+    (0.9, 0.99),  # alpha_E
+    # (0.8, 0.99),  # rho
 ]
 
 for param, bounds in zip(parameters_to_calibrate, priors_bounds):
