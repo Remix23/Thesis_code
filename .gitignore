@@ -3,6 +3,7 @@ video
 sbi-logs
 papers
 data
+*.docx
 *.aux
 *.fdb_latexmk
 *.fls

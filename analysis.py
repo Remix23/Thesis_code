@@ -18,7 +18,7 @@ from sbi.neural_nets.embedding_nets import (
     CausalCNNEmbedding
 )
 
-from neural_network import RNN, MLP, CNN_GDP
+from neural_network import RNN, CNN_GDP
 
 from sbi.diagnostics import check_sbc, run_sbc
 
@@ -60,10 +60,10 @@ to_log_growth = lambda x: np.diff(np.log(x))
 to_log = lambda x: np.log(x)
 to_growth_rate = lambda x: np.diff(x) / x[:, :-1]
 
-### x - (n_trajectories, T_hist + 1)
+### x - (n_trajectories, T_hist) -> (n_trajectories, (T_hist - 1)*3) with channels log, growth rate, difference
 # we want 
 to_cnn3 = lambda x: np.concatenate([to_log(x)[:, 1:], to_growth_rate(x), np.diff(x)], axis=1)
-
+to_cnn3_channels = lambda x: np.stack([to_log(x)[:, 1:], to_growth_rate(x), np.diff(x)], axis=1)
 STATISTICS = {
     "mean": lambda sim_out: np.mean(sim_out),
     "std": lambda sim_out: np.std(sim_out),
@@ -215,7 +215,7 @@ def train_npe_statistics_rounds (priors, stat_keys, full_params, initial_conditi
         proposal = posterior.set_default_x(x_o)
         
         print(f"Completed round {i + 1}/{rounds} of NPE training with statistics {', '.join(stat_keys)}")
-    return posterior
+    return posterior, proposals
 
 def train_npe_nn_rounds (priors, nn, nn_transform, full_params, initial_conditions, params_to_calibrate,observed, t_train, rounds = 3, n_sim_per_round = 100):
     dense_estimator = posterior_nn(
@@ -226,18 +226,21 @@ def train_npe_nn_rounds (priors, nn, nn_transform, full_params, initial_conditio
     x_o = torch.tensor(nn_transform(observed), dtype=torch.float32)
     inference = NPE_C(prior = priors, density_estimator=dense_estimator)
     proposal = priors
+    proposals = []
     for i in range(rounds):
+        proposals.append(proposal)
         if i > 0:
             theta = proposal.sample((n_sim_per_round, ), show_progress_bars=False)
         else:
             theta = proposal.sample((n_sim_per_round,))
-        sim_data = np.array([nn_transform(run_monte_carlo(rep_parameters(full_params, params_to_calibrate, sample.numpy()), initial_conditions, t_train, num_simulations=10)) for sample in theta])
-        x = torch.tensor(sim_data, dtype=torch.float32)
+        sim_data = np.array([run_monte_carlo(rep_parameters(full_params, params_to_calibrate, sample.numpy()), initial_conditions, t_train, num_simulations=10) for sample in theta])
+        sim_data = sim_data.reshape((sim_data.shape[0], -1)) # reshape to (n_simulations, T_hist + 1) for CNN input
+        x = torch.tensor(nn_transform(sim_data), dtype=torch.float32)
         density_estimator = inference.append_simulations(theta, x, proposal=proposal).train()
         posterior = inference.build_posterior(density_estimator=density_estimator, sample_with="mcmc")
         proposal = posterior.set_default_x(x_o)
         print(f"Completed round {i + 1}/{rounds} of NPE training with NN embedding {nn.__class__.__name__}")
-    return posterior
+    return posterior, proposals
 
 def train_npe_statistics (priors, prior_samples, sim_raw, stat_keys, rem_out = True):
     npe = NPE(prior=priors)
@@ -330,8 +333,8 @@ def compute_rmsfes (forecast, realized):
 
 if __name__ == "__main__":
 
-    NUM_SIM_PER_ROUND = 1000
-    ROUNDS = 10
+    NUM_SIM_PER_ROUND = 10
+    ROUNDS = 2
 
     priors_samples, npe_x_base, raw, parameters_to_calibrate, bounds = load_data()
     parameters_to_calibrate = parameters_to_calibrate.tolist()
@@ -356,7 +359,9 @@ if __name__ == "__main__":
     df = df[df["date"] <= date_forecast]
 
     observed_series = df[df["date"] <= final_calibration]
+
     realized_future = df[df["date"] > final_calibration]
+
 
     assert len(observed_series) == T_hist + 1
     assert len(realized_future) == T_forecast
@@ -370,7 +375,7 @@ if __name__ == "__main__":
     priors = BoxUniform(low=torch.tensor(bounds)[:, 0], high=torch.tensor(bounds)[:, 1])
 
     ### NPE training
-    if npe_x_base is not None:
+    if npe_x_base is not None and "base" in argv:
         npe = NPE(prior=priors)
         idx = remove_outliers(npe_x_base, m = 5)
         npe = npe.append_simulations(torch.tensor(priors_samples[idx, :], dtype=torch.float32), torch.tensor(npe_x_base[idx, :], dtype=torch.float32))
@@ -385,25 +390,21 @@ if __name__ == "__main__":
     s2 = ["mean", "std", "yearly_corr", "ar1_coeff", "ar2_coeff", "min", "skewness", "kurtosis"]
     s_base = ["mean", "std", "min", "max", "auto_corr_1", "auto_corr_2", "auto_corr_3","quantile_25", "quantile_50", "quantile_75"]
 
-    statistics_versions = []
+    s_base_seq = s_base + ["sequential"]
+    s1_seq = s1 + ["sequential"]    
 
-    ps = [train_npe_statistics(priors, priors_samples, raw, s) for s in statistics_versions]
-
+    statistics_versions = [s_base_seq, s1_seq]
+    statistics_posteriors = []
     posteriors_hist = []
 
-    ## check SNPE (as in SNPE_C)
-    # seq_1, posteriors1 = train_npe_statistics_rounds(
-    #     priors, s_base, hist_params, hist_initial, parameters_to_calibrate, observed_series["real"].values, t_train = T_hist, rounds=10, n_sim_per_round=NUM_SIM_PER_ROUND,
-    # )
+    for i, s in enumerate(statistics_versions):
+        final_posterior, posteriors = train_npe_statistics_rounds(priors, s, hist_params, hist_initial, 
+                                          parameters_to_calibrate, observed_series["real"].values, 
+                                          t_train = T_hist, rounds=ROUNDS, n_sim_per_round=NUM_SIM_PER_ROUND)
+        posteriors_hist.append((s, posteriors))
+        statistics_posteriors.append(final_posterior)
 
-    # seq_2, posteriors2 = train_npe_statistics_rounds(
-    #     priors, s1, hist_params, hist_initial, parameters_to_calibrate, observed_series["real"].values, t_train = T_hist, rounds=10, n_sim_per_round=NUM_SIM_PER_ROUND,
-    # )
 
-    # posteriors_hist.append((s_base, posteriors1))
-    # posteriors_hist.append((s1, posteriors2))
-    
-    # ps += [seq_1, seq_2]
     # statistics_versions += [s_base + ["sequential"], s1 + ["sequential"]]
 
     ### networking embedding
@@ -411,6 +412,7 @@ if __name__ == "__main__":
     nn_posteriors = []
     input_transforms = []
     nn_versions = []
+
     if "nn" in argv:
 
         nn_raw = CausalCNNEmbedding(
@@ -437,7 +439,7 @@ if __name__ == "__main__":
         )
 
         ### rnn as in Dyer et. al. (2024) and labour market
-        n_rnn = RNN(
+        nn_rnn = RNN(
             input_dim=T_hist + 1,
             flavour="elman",
             hidden_dim=32,
@@ -445,57 +447,73 @@ if __name__ == "__main__":
             mlp_dims=12
         )
 
-        nns += [nn_raw, nn_diff, nn_3channels, n_rnn]
-        input_transforms += [lambda x: x, to_log_growth, to_cnn3, lambda x: x]
-
-
-        n3 = CNN_GDP()
-
         s_nn = ["mean", "std", "yearly_corr", "ar1_coeff", "ar2_coeff", "min", "skewness", "kurtosis"]
 
+        nn_cnn_mixture = CNN_GDP(stat_keys=s_nn, in_channels=3, conv_dims=[16, 32], summary_dims=16, out_dims=32, pool_kernel_size=1)
+
+        nns += [nn_raw, nn_diff, nn_rnn,nn_3channels, nn_cnn_mixture]
+        input_transforms +=  [lambda x: x, to_log_growth, lambda x: x, to_cnn3, to_cnn3_channels]
+        nn_versions += ["raw", "diff", "rnn", "cnn3", "cnn3_mixture"]
+
+        assert len(nns) == len(input_transforms) == len(nn_versions)
+
     ### append NN-based posteriors
-    for nn, transform in zip(nns, input_transforms):
-        post = train_npe_nn_rounds(priors, nn, transform, hist_params, hist_initial, parameters_to_calibrate, observed_series["real"].values, T_hist, rounds=10, n_sim_per_round=NUM_SIM_PER_ROUND)
+    print("Training NN-based NPEs...")
+    observed_series_cnn = observed_series["real"].values.reshape(1, -1) # reshape to (1, T_hist + 1) for CNN input
+    for nn, transform, name in zip(nns, input_transforms, nn_versions):
+        print(f"\nTraining NPE with NN embedding: {name}")
+        post, posteriors = train_npe_nn_rounds(priors, nn, transform, hist_params, hist_initial, parameters_to_calibrate, observed_series_cnn, T_hist, rounds=ROUNDS, n_sim_per_round=NUM_SIM_PER_ROUND)
+        # post = train_npe_nn(priors, priors_samples, transform(raw), nn)
         nn_posteriors.append(post)
-        nn_versions.append(f"nn_{nn.__class__.__name__}")
+        nn_versions.append(f"nn_{name}")
+        posteriors_hist.append((f"nn_{name}", posteriors))
+
+    if "save" in argv:
+        posteriors = {f"stat_{','.join(to_short_names(s))}": p for p, s in zip(statistics_posteriors, statistics_versions)}
+        
+        posteriors.update({f"nn_{name}": p for p, name in zip(nn_posteriors, nn_versions)})
+        
+        save_posteriors(posteriors, statistics_versions, f"trained_posteriors/posteriors_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_p{len(parameters_to_calibrate)}.pkl")
+        save_posteriors(posteriors_hist, statistics_versions, f"trained_posteriors/posteriors_hist_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_p{len(parameters_to_calibrate)}.pkl")
+
 
     if "pp_forecast" in argv:
         ### pairplots for statistics-based NPE
-        for p, s in zip(ps, statistics_versions):
-            pplot_stat(p, n_hist, compute_statistics_dict(realized_future["real"].values, s), final_params, s)
+        for p, s in zip(statistics_posteriors, statistics_versions):
+            pplot_stat(p, n_hist, compute_statistics_dict(observed_series["real"].values, s), final_params, s)
         
-        for p, transform in zip(nn_posteriors, input_transforms):
-            pplot_stat(p, n_hist, transform(realized_future["real"].values), final_params)
+        for p, transform, name in zip(nn_posteriors, input_transforms, nn_versions):
+            pplot_stat(p, n_hist, transform(observed_series["real"].values), final_params)
 
     
     if "pp_history" in argv:
         ### pairplots for statistics-based NPE
-        for p, s in zip(ps, statistics_versions):
+        for p, s in zip(statistics_posteriors, statistics_versions):
             pplot_stat(p, n_hist, compute_statistics_dict(observed_series["real"].values, s), final_params, s)
 
-        for p, transform in zip(nn_posteriors, input_transforms):
+        for p, transform, name in zip(nn_posteriors, input_transforms, nn_versions):
             pplot_stat(p, n_hist, transform(observed_series["real"].values), final_params)
 
     if "ppc" in argv:
         ### for statistics
-        for p, s in zip(ps, statistics_versions):
+        for p, s in zip(statistics_posteriors, statistics_versions):
             stats = compute_statistics_dict(observed_series["real"].values, s)
             samples = p.sample((100,), x = stats)
             stats_out = np.array([compute_statistics_dict(run_monte_carlo(rep_parameters(final_params, parameters_to_calibrate, sample.numpy()), final_initial, T_hist, num_simulations=10), s) for sample in samples])
             file_name = f"pngs/ppc_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_p{len(parameters_to_calibrate)}_{','.join(to_short_names(s))}.png"
             ppc_plot(stats, stats_out, file_name)
         
-        for p, transform in zip(nn_posteriors, input_transforms):
+        for p, transform, name in zip(nn_posteriors, input_transforms, nn_versions):
             stats = transform(observed_series["real"].values)
             samples = p.sample((100,), x = stats)
             stats_out = np.array([transform(run_monte_carlo(rep_parameters(final_params, parameters_to_calibrate, sample.numpy()), final_initial, T_hist, num_simulations=10)) for sample in samples])
-            file_name = f"pngs/ppc_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_p{len(parameters_to_calibrate)}_nn{p.__class__.__name__}.png"
+            file_name = f"pngs/ppc_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_p{len(parameters_to_calibrate)}_nn{name}.png"
             ppc_plot(stats, stats_out, file_name)
 
     if "sbc" in argv:
         num_sbc_saples = 100 * len(parameters_to_calibrate)
         prior_samples_sbc = priors.sample((num_sbc_saples,))
-        for p, s in zip(ps, statistics_versions):
+        for p, s in zip(statistics_posteriors, statistics_versions):
             print(f"Running SBC for statistic set: {', '.join(to_short_names(s))}")
             stats = np.array([compute_statistics_dict(run_monte_carlo(rep_parameters(hist_params, parameters_to_calibrate, sample.numpy()), hist_initial, T_hist, num_simulations=10), s) for sample in prior_samples_sbc])
             stats = torch.tensor(stats, dtype=torch.float32)
@@ -507,14 +525,16 @@ if __name__ == "__main__":
             )
         
     if "forecast" in argv:
-        forecasts = {",".join(to_short_names(s)): forecast(p, observed_series["real"].values, final_params, final_initial, s) for p, s in zip(ps, statistics_versions)}
-        forecast.update({f"nn_{p.__class__.__name__}": forecast(p, observed_series["real"].values, final_params, final_initial) for p in nn_posteriors})
+        forecasts = {",".join(to_short_names(s)): forecast(p, observed_series["real"].values, final_params, final_initial, s) for p, s in zip(statistics_posteriors, statistics_versions)}
+        forecasts.update({f"nn_{name}": forecast(p, observed_series["real"].values, final_params, final_initial) for p, name in zip(nn_posteriors, nn_versions)})
         
-
         abm_forecast = run_monte_carlo(final_params, final_initial, T_forecast, num_simulations=100)[1:]
         forecasts["ABM_base"] = abm_forecast
 
-        if npe_x_base is not None:
+        print(forecasts.keys())
+        print(forecasts.values())
+
+        if npe_x_base is not None and "base" in argv:
             forecast_statistic = torch.tensor(compute_statistics(observed_series["real"].values))
             npe_forecast_params = posterior.sample((1000, ), x = forecast_statistic).mean(dim= 0)
             npe_forecast_params = rep_parameters(final_params, parameters_to_calibrate, npe_forecast_params)
@@ -524,10 +544,6 @@ if __name__ == "__main__":
 
         rolling_rsmfes = plot_forecasts(forecasts, realized_future, parameters_to_calibrate, bounds)
 
-    if "save" in argv:
-        posteriors = {f"stat_{','.join(to_short_names(s))}": p for p, s in zip(ps, statistics_versions)}
-        
-        posteriors.update({f"nn_{p.__class__.__name__}": p for p in nns})
-        
-        save_posteriors(posteriors, statistics_versions, f"trained_posteriors/posteriors_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_p{len(parameters_to_calibrate)}.pkl")
-        save_posteriors(posteriors_hist, statistics_versions, f"trained_posteriors/posteriors_hist_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_p{len(parameters_to_calibrate)}.pkl")
+        print("Rolling RMSFEs:")
+        for key, value in rolling_rsmfes.items():
+            print(f"  {key}: {value}")
