@@ -1,5 +1,13 @@
-\documentclass{article}
+\documentclass[12pt, a4paper]{article}
 \usepackage{graphicx} % Required for inserting images
+\usepackage{setspace}
+\usepackage{geometry}
+ \geometry{
+ a4paper,
+ total={170mm,257mm},
+ left=20mm,
+ top=20mm,
+ }
 \usepackage{amsmath, amsfonts}
 
 \title{Thesis}
@@ -9,6 +17,7 @@
 \begin{document}
 
 \maketitle
+\onehalfspacing
 
 \section{Introduction}
 Question: To what extent does Neural Posterior Estimation improve the calibration and macro economical forecasting performance of a macroeconomic Agent-Based Model relative to traditional estimation methods?
@@ -91,6 +100,9 @@ Since our analysis is based on posterior estimation and forecasting performance,
     \item Validation of the posterior using approximate Bayesian technique: Simulation Based Calibration.
     \item Evaluation of forecasting performance of the model with parameters obtained from NPE. 
 \end{enumerate}
+
+\subsection{Sampling}
+
 
 \subsection{Posterior Estimation}
 

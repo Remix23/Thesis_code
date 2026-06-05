@@ -16,8 +16,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
-from sbi.analysis import pairplot
-from sbi.diagnostics import check_sbc, run_sbc
 from sbi.inference import NPE
 from sbi.utils import BoxUniform
 
@@ -29,13 +27,13 @@ def rep_parameters(parameters, parameters_to_calibrate, draw):
     return sim_paramerters
 
 
-def run_sim(parameters, initial_conditions, T):
-    data = jl.run_simulation(parameters, initial_conditions, T)
+def run_sim(parameters, initial_conditions, T, keys):
+    data = jl.run_simulation(parameters, initial_conditions, T, keys)
     return np.array(data)
 
 
-def run_monte_carlo(parameters, initial_conditions, T, num_simulations):
-    data = jl.run_monte_carlo(parameters, initial_conditions, T, num_simulations)
+def run_monte_carlo(parameters, initial_conditions, T, num_simulations, keys):
+    data = jl.run_monte_carlo(parameters, initial_conditions, T, num_simulations, keys)
     data = np.mean(data, axis=0)  # average across simulations
     return np.array(data)
 
@@ -43,22 +41,21 @@ def run_monte_carlo(parameters, initial_conditions, T, num_simulations):
 ### initial calibration
 initial_calibration = datetime(2010, 3, 31)
 
-n = 6  # number of years to simulate -> 5 years
+n = 3  # number of years to simulate -> 3 years
 T_hist = 4 * n - 1  # quaters
 final_calibration = datetime(
     initial_calibration.year + T_hist // 4, 12, initial_calibration.day
 )
 
-T_forecast = 4 * 4  # 5 years forecast
+T_forecast = 4 * 3  # 3 years forecast
 date_forecast = datetime(
     final_calibration.year + T_forecast // 4,
     final_calibration.month,
     final_calibration.day,
 )
 ### real data
-csv_data = pd.read_csv("data_npz/italy_real_gdp.csv", parse_dates=["observation_date"])
-csv_data = csv_data[csv_data["observation_date"] >= initial_calibration]
-quarterly_dates, bit = [np.array(x) for x in jl.get_real()]
+
+quarterly_dates, bit = [np.array(x) for x in jl.get_real(["anc"])]
 
 n = len(quarterly_dates)
 df = pd.DataFrame({"date": quarterly_dates.flatten(), "real": bit.flatten()})
@@ -73,17 +70,15 @@ final_params, final_initial = jl.calibrate(
     final_calibration.year, final_calibration.month, final_calibration.day
 )
 ### gen historical date for NPE
-beta0 = hist_params["beta_E"]
 
 # parameters_to_calibrate = ["psi", "alpha_G", "beta_E", "alpha_E", "xi_gamma"]
-parameters_to_calibrate = ["psi", "alpha_G", "beta_E", "alpha_E"]
+parameters_to_calibrate = ["theta", "zeta", "zeta_LTV", "zeta_b"]
 
 priors_bounds = [
-    (0.9, 0.99),  # psi
-    (0.9, 0.99),  # alpha_G,
-    (0.7*beta0, 1.3 * beta0), # beta_E
-    (0.9, 0.99),  # alpha_E
-    # (0.8, 0.99),  # rho
+    (0.01, 0.99),  # theta
+    (0.01, 0.5),  # zeta
+    (0.1, 1.2),  # zeta_LTV
+    (0, 2),  # zeta_B
 ]
 
 for param, bounds in zip(parameters_to_calibrate, priors_bounds):
@@ -107,39 +102,58 @@ n_histories = int(
 priors_bounds = torch.tensor(priors_bounds, dtype=torch.float32)
 priors = BoxUniform(low=priors_bounds[:, 0], high=priors_bounds[:, 1])
 
-raw = np.ndarray(shape=(n_histories, T_hist + 1))
+avaible_keys = [
+    "real_gdp",
+    "gdp_deflator",
 
-if "prior_check" in argv:
-    plt.figure(figsize=(12, 8))
+]
 
-priors_samples = priors.sample((n_histories,))
-for i, draw in enumerate(priors_samples):
-    sim_parameters = rep_parameters(hist_params, parameters_to_calibrate, draw)
-    sim_initial = hist_initial
-    sim_out = run_monte_carlo(sim_parameters, sim_initial, T_hist, num_simulations=15)
-    if "prior_check" in argv:
-        plt.plot(sim_out, alpha=0.2, color="blue")
-    raw[i, :] = sim_out
-    print(
-        f"Completed {i + 1}/{n_histories} simulations for NPE data generation", end="\r"
+def run_prior_check():
+    pass
+
+def gen_sample (calibration_date, T, priors, params_to_calibrate, n_samples, n_runs, keys):
+    theta_draws = priors.sample((n_samples,))
+    params, initial_conditions = jl.calibrate(
+        calibration_date.year, calibration_date.month, calibration_date.day
     )
-print()
+    samples = np.zeros((n_samples, n_runs, len(keys), T + 1))
+    for i, draw in enumerate(theta_draws):
+        sim_parameters = rep_parameters(params, params_to_calibrate, draw)
+        sim_out = jl.run_monte_carlo(sim_parameters, initial_conditions, T, n_runs, keys)
+        sim_out = np.array(sim_out)
+        samples[i, :, :, :] = sim_out
+    if "prior_check" in argv:
+        run_prior_check()
+    return theta_draws.numpy(), samples
 
-### saving
+num_calibrations = 4
+n_runs = 10
+keys = ["real_gdp", "gdp_deflator"]
+samples = np.zeros((n_histories, num_calibrations, n_runs, len(keys), T_hist + 1))
+prior_draws = np.zeros((num_calibrations, n_histories, len(parameters_to_calibrate)))
+
+for i in range(4):
+    cal_date_year = initial_calibration.year + i
+    cal_date = datetime(cal_date_year, initial_calibration.month, initial_calibration.day)
+    theta_draws, sample = gen_sample(
+        calibration_date=cal_date,
+        T=T_hist,
+        priors=priors,
+        params_to_calibrate=parameters_to_calibrate,
+        n_samples=n_histories,
+        n_runs=n_runs,
+        keys=keys,
+    )
+    samples[:, i, :, :] = sample
+    prior_draws[i, :, :] = theta_draws
+    print(f"Calibration date: {cal_date}, sample shape: {sample.shape}")
+
+### save
 np.savez(
-    "npe_data.npz",
-    priors_samples=priors_samples,
-    raw=raw,
-    parameters_to_calibrate=parameters_to_calibrate,
-    bounds=priors_bounds,
+    f"data/prior_samples_n{n_histories}_{','.join(parameters_to_calibrate)}_bounds{','.join([str(b) for b in priors_bounds.numpy()])}.npz",
+    sim_out=samples,
+    theta_draw = prior_draws,
+    bounds = priors_bounds.numpy(),
+    parameters_to_calibrate = parameters_to_calibrate
 )
 
-if "prior_check" in argv:
-    plt.plot(df["real"].values[: T_hist + 1], color="black", label="Real GDP")
-    plt.title("Simulated trajectories from the prior")
-    plt.xlabel("Time (quarters)")
-    plt.ylabel("Real GDP")
-    plt.savefig(
-        f"pngs/prior_check_n{n_histories}_{', '.join(parameters_to_calibrate)}_bounds{', '.join([str(b) for b in priors_bounds.numpy()])}.png"
-    )
-    plt.show()

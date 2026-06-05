@@ -3,7 +3,25 @@ module JuliaModel
 import BeforeIT
 using Dates
 
-function run_simulation(parameters, initial_conditions, T)
+function processSimulationOutput(data, keys)
+    out = zeros(length(keys), size(data.real_gdp, 1))
+    for (i, key) in enumerate(keys)
+        s = Symbol(key)
+        if key == "gdp_deflator"
+            out[i, :] = data.nominal_gdp ./ data.real_gdp 
+        else
+            if !hasproperty(data, s)
+                println("Key $(key) not found in model output.")
+                continue
+            end
+            out[i, :] = getfield(data, s)
+        end
+        
+    end
+    return out
+end 
+
+function run_simulation(parameters, initial_conditions, T, keys)
     if Threads.nthreads() > 1
         parallel = true
     else
@@ -11,25 +29,27 @@ function run_simulation(parameters, initial_conditions, T)
     end
     model = BeforeIT.Model(parameters, initial_conditions)
     data = BeforeIT.run!(model, T, parallel=parallel)
-    gdp = data.data.real_gdp
-    return gdp
+    return processSimulationOutput(data.data, keys)
 end
 
-function run_monte_carlo(parameters, initial_conditions, T, num_simulations)
+function run_monte_carlo(parameters, initial_conditions, T, num_simulations, keys)
     models = [BeforeIT.Model(parameters, initial_conditions) for _ in 1:num_simulations]
     data = BeforeIT.ensemblerun!(models, T, parallel=true)
-    gdps = [d.data.real_gdp for d in data]
-    return gdps
+    out = zeros(num_simulations, length(keys), T + 1)
+    for (i, d) in enumerate(data)
+        out[i, :, :] = processSimulationOutput(d.data, keys)
+    end
+    return out
 end
 
-function run_for_different_parameters(parameters_list, initial_conditions, T)
+function run_for_different_parameters(parameters_list, initial_conditions, T, keys)
     models = [BeforeIT.Model(parameters, initial_conditions) for parameters in parameters_list]
     data = BeforeIT.ensemblerun!(models, T, parallel=true)
-    gdps = [d.data.real_gdp for d in data]
-    return gdps
+    out = [processSimulationOutput(d.data, keys) for d in data]
+    return out
 end
 
-function get_real()
+function get_real(keys)
     cal = BeforeIT.ITALY_CALIBRATION
     d = cal.data["real_gdp_quarterly"]
     first = DateTime(1996, 3, 31)

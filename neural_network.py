@@ -70,6 +70,8 @@ class CNN_GDP(nn.Module):
 		return torch.tensor(summaries, dtype=torch.float32)
 
 	def forward(self, x):
+		x = x.reshape((x.shape[0], 3, -1)) # reshape to (batch_size, in_channels, sequence_length)
+		print(f"Input shape: {x.shape}")
 		h1 = self.conv(x).squeeze(-1)
 
 		log_gdp = x[:, 0, :]
@@ -116,9 +118,41 @@ class RNN(nn.Module):
 			_x = self.relu(layer(_x))
 		return self.final(_x)
 	
+class SeqEmbedding(nn.Module):
+	def __init__ (self, T, n_features, hidden_size, out_dim):
+		super().__init__()
+		self.T, self.n_features, self.hidden_size, self.out_dim = T, n_features, hidden_size, out_dim
+
+		self.gru = nn.GRU(
+			input_size=n_features,
+			hidden_size = hidden_size,
+			num_layers=2,
+		)
+
+		self.head = nn.Linear(
+			hidden_size, 
+			out_dim,
+		)
+
+	def forward(self, x):
+		x = x.reshape(-1, self.T, self.n_features) # (batch_size, T, n_features)
+		x = x.permute(1, 0, 2) # (batch_size, n_features, T)
+		_, h = self.gru(x)
+		return self.head(h[-1])
+
 if __name__ == "__main__":
 	cnn = CNN_GDP(
 		stat_keys=["mean", "std"], 
 	)
 	print(cnn.forward(randn(1, 3, 10)))
 	print(cnn)
+
+	seq = SeqEmbedding(
+		T = 10, 
+		n_features = 3,
+		hidden_size = 64,
+		out_dim = 16,
+	)
+
+	print(seq.forward(randn(1, 3, 10).flatten()))
+	
