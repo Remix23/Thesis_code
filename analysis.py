@@ -1,6 +1,7 @@
 from os import path, listdir, getcwd, environ
 from sys import argv
 from datetime import datetime, date
+from typing import Tuple
 NUM_THREADS = 10
 
 environ["JULIA_NUM_THREADS"] = str(NUM_THREADS)
@@ -11,14 +12,14 @@ jl.seval("using JuliaModel: run_simulation, get_real, calibrate, run_monte_carlo
 print(f"Using JuliaModel with {jl.seval('Threads.nthreads()')} threads.")
 
 from sbi.utils import BoxUniform
-from sbi.inference import NPE, NPE_C, simulate_for_sbi
+from sbi.inference import NPE, NPE_C, simulate_for_sbi, NRE
 from sbi.analysis import pairplot
-from sbi.neural_nets import posterior_nn
+from sbi.neural_nets import posterior_nn, classifier_nn
 from sbi.neural_nets.embedding_nets import (
     CausalCNNEmbedding
 )
 
-from neural_network import RNN, CNN_GDP
+from neural_network import RNN, CNN_GDP, SeqEmbedding, Batched
 
 from sbi.diagnostics import check_sbc, run_sbc
 
@@ -33,8 +34,30 @@ import pickle
 torch.manual_seed(0)
 np.random.seed(0)
 
-NUM_SIM_PER_ROUND = 10
+NUM_CALIBRATION_DATES = 2
+NUM_SIM_PER_ROUND = 20
+
+NUM_RUNS_PER_DRAW = 5
+
 ROUNDS = 2
+
+FIRST_CALIBRATION_DATE = datetime(2011, 3, 31)
+
+AVAILABLE_KEYS = [
+    "real_gdp",
+    "nominal_gdp",
+    "real_gva",
+    "nominal_gva",
+    "gdp_deflator",
+    "real_household_consumption", 
+    "real_government_consumption",
+    "real_capitalformation",
+    "real_exports",
+    "real_imports",
+    "wages",
+    "euribor",
+    "gdp_deflator",
+]
 
 def rep_parameters(parameters, parameters_to_calibrate, draw):
     sim_paramerters = parameters.copy()
@@ -59,14 +82,74 @@ def findar_p (times_series, p):
     ols = np.linalg.lstsq(lagged, target, rcond=None)
     return ols[0]
 
-to_log_growth = lambda x: np.diff(np.log(x))
-to_log = lambda x: np.log(x)
-to_growth_rate = lambda x: np.diff(x) / x[:, :-1]
+def gen_sample (calibration_date, theta_draws, T, params_to_calibrate, n_runs, keys):
+    params, initial_conditions = jl.calibrate(
+        calibration_date.year, calibration_date.month, calibration_date.day
+    )
+    samples = torch.zeros((theta_draws.shape[0], n_runs, len(keys), T + 1))
+    for i, draw in enumerate(theta_draws):
+        sim_parameters = rep_parameters(params, params_to_calibrate, draw)
+        sim_out = np.array(jl.run_monte_carlo(sim_parameters, initial_conditions, T, n_runs, keys))
+        sim_out = torch.tensor(sim_out, dtype=torch.float32)
+        samples[i, :, :, :] = sim_out
+
+    return samples
+
+def gen_batch (calibration_date, T, priors, params_to_calibrate, n_samples, n_runs, keys) -> Tuple[torch.Tensor, torch.Tensor]:
+
+    batch = torch.zeros(
+        n_samples, NUM_CALIBRATION_DATES, n_runs, len(keys), T + 1
+    )
+    if isinstance(priors, BoxUniform):
+        theta_draws = priors.sample((n_samples, ))
+    else:
+        theta_draws = priors.sample((n_samples, ), show_progress_bars=False)
+
+    for i in range(NUM_CALIBRATION_DATES):
+        cal_year = calibration_date.year + i
+        cal_date = datetime(cal_year, calibration_date.month, calibration_date.day)
+        print(f"Generating batch for calibration date: {cal_date.strftime('%Y-%m-%d')}")
+        samples = gen_sample(cal_date, theta_draws, T, params_to_calibrate, n_runs, keys)
+        batch[:, i, :, :, :] = samples
+
+    return batch, theta_draws
+
+def prepare_real (observed, keys):
+    ### we want observed to a dataframe with columns "date" and keys, and sorted by date, and with at least T_hist + 1 rows for each calibration date, and we want to return a generator of tensors of shape (len(keys), T_hist + 1) for each calibration date, where the tensor is the historical data for that calibration date.
+    ### we output a x_o tensor for NN
+    ### we need (calibration dates, n_runs, n_feature, T_hist + 1)
+
+    out = torch.zeros((NUM_CALIBRATION_DATES, NUM_RUNS_PER_DRAW, len(keys), T_hist + 1))
+
+    for i in range(NUM_CALIBRATION_DATES):
+        cal_year = FIRST_CALIBRATION_DATE.year + i
+        cal_date = datetime(cal_year, FIRST_CALIBRATION_DATE.month, FIRST_CALIBRATION_DATE.day)
+        print(f"Preparing real data for calibration date: {cal_date.strftime('%Y-%m-%d')}")
+        observed_cal = observed[observed["date"] >= cal_date]
+        if len(observed_cal) < T_hist + 1:
+            raise ValueError(f"Not enough historical data for calibration date {cal_date.strftime('%Y-%m-%d')}. Required: {T_hist + 1}, Available: {len(observed_cal)}")
+        observed_cal = observed_cal.tail(T_hist + 1)
+        
+        for j in range(NUM_RUNS_PER_DRAW):
+            out[i, j, :, :] = torch.tensor(observed_cal[keys].values.T, dtype=torch.float32)
+
+    return out
+
+to_log_growth = lambda x: torch.diff(torch.log(x), dim=-1)
+to_log = lambda x: torch.log(x)
+to_growth_rate = lambda x: torch.diff(x, dim=-1) / x[..., :-1]
 
 ### x - (n_trajectories, T_hist) -> (n_trajectories, (T_hist - 1)*3) with channels log, growth rate, difference
 # we want 
-to_cnn3 = lambda x: np.concatenate([to_log(x)[:, 1:], to_growth_rate(x), np.diff(x)], axis=1)
+to_cnn3 = lambda x: torch.concatenate([to_log(x)[:, 1:], to_growth_rate(x), torch.diff(x, dim=-1)], dim=-1)
 # to_cnn3_channels = lambda x: np.concatenate([to_log(x)[:, 1:], to_growth_rate(x), np.diff(x)], axis=1)
+
+### input transormations for NN-based NPEs
+# x: (N_draws, N_calibration_dates, n_runs, n_features, T_hist + 1)
+reduction = lambda x: x.mean(axis=2)[:, 0, 0, :] 
+to_one_series = lambda x: x[:, 0, 0, 0, :] # take the first calibration date, first run, first feature
+to_seq_multivariate = lambda x: x.mean(axis=2)[:, 0, :, :] # take the first calibration date, average across runs, keep all features
+
 STATISTICS = {
     "mean": lambda sim_out: np.mean(sim_out),
     "std": lambda sim_out: np.std(sim_out),
@@ -138,6 +221,20 @@ def compute_statistics_dict (sim_out, keys = None):
     return np.array([STATISTICS[key](x) for key in keys if key != "sequential"])
 
 ### load data
+def load_custom ():
+    parameters_to_calibrate = ["theta", "zeta", "zeta_LTV", "zeta_b", "omega", "lambda_p"]
+
+    priors_bounds = [
+        (0, 1),  # theta
+        (0.03, 0.5),  # zeta
+        (0.3, 1),  # zeta_LTV
+        (0, 2),  # zeta_B
+        (0, 1),  # omega
+        (0.1, 4),  # lambda_p
+    ]
+    return np.zeros((1, 1)), None, None, parameters_to_calibrate, priors_bounds
+
+
 def load_data():
     data_folder = path.join(getcwd(), "data_npz")
     all_npe = listdir(data_folder) + listdir(getcwd())
@@ -152,8 +249,9 @@ def load_data():
 
     file_index = int(input("Enter the number corresponding to the file you want to load: ")) - 1
 
+
     if file_index < 0 or file_index >= len(files):
-        raise ValueError("Invalid file number selected.")
+        return load_custom()
 
     file_path = path.join(data_folder, files[file_index]) if files[file_index] in listdir(data_folder) else path.join(getcwd(), files[file_index])
 
@@ -171,6 +269,7 @@ def load_data():
     for param, value in zip(data["parameters_to_calibrate"], data["bounds"]):
         print(f"{param}: {value}")
     return data["priors_samples"], dat, data["raw"], data["parameters_to_calibrate"], data["bounds"]
+
 
 def save_posteriors (posteriors, verions, file_name):
     with open(file_name, "wb") as f:
@@ -194,12 +293,68 @@ def remove_outliers(data: np.ndarray, m: float = 2.0, stat_names: list = None) -
             print(f"  - {stat}: {out_counts} outliers")
     return ~out
 
-def train_npe_statistics_rounds (priors, stat_keys, full_params, initial_conditions, params_to_calibrate,observed, t_train, rounds = 3, n_sim_per_round = 100, ):
+def train_npe_nn_batched (priors, nn, nn_transform, params_to_calibrate, observed, t_train, features_kyes, rounds = 3, n_sim_per_round = 100):
+    dense_estimator = posterior_nn(
+        model="nsf",
+        embedding_net=nn,
+        z_score_x="structured"
+    )
+    x_o = nn_transform(prepare_real(observed, features_kyes).unsqueeze(0)).squeeze(0) # (1, n_features, T_hist + 1) -> (1, embedding_dim)
+    inference = NPE_C(prior = priors, density_estimator=dense_estimator)
+    proposal = priors
+    proposals = []
+    for i in range(rounds):
+
+        batch, theta_draws = gen_batch(FIRST_CALIBRATION_DATE, 
+                                       t_train, proposal, params_to_calibrate, n_sim_per_round, NUM_RUNS_PER_DRAW, features_kyes)
+        
+        # print(f"Generated batch with shape {batch.shape} for round {i + 1}/{rounds}")
+        batch = nn_transform(batch)
+        # print(f"Transformed batch shape after NN transform: {batch.shape}")
+        batch = batch.flatten(start_dim=1)
+
+
+        density_estimator = inference.append_simulations(theta_draws, batch, proposal=proposal).train()
+        posterior = inference.build_posterior(density_estimator=density_estimator)
+        proposal = posterior.set_default_x(x_o)
+        print(f"\nCompleted round {i + 1}/{rounds} of NPE training with NN embedding {nn.__class__.__name__}")
+    return posterior, proposals
+
+def train_nre_nn_batched (priors, nn, nn_transform, params_to_calibrate, observed, t_train, features_kyes, rounds = 3, n_sim_per_round = 100):
+    classifier = classifier_nn(
+        model="mlp",
+        embedding_net_x=nn,
+        z_score_x="structured"
+    )
+    x_o = prepare_real(observed, features_kyes)
+    inference = NRE(prior = priors, classifier=classifier)
+    proposal = priors
+    proposals = []
+    for i in range(rounds):
+        proposals.append(proposal)
+
+        batch, theta_draws = gen_batch(FIRST_CALIBRATION_DATE, 
+                                       t_train, proposal, params_to_calibrate, n_sim_per_round, NUM_RUNS_PER_DRAW, features_kyes)
+        batch = nn_transform(batch)
+
+        batch = batch.reshape((batch.shape[0], NUM_CALIBRATION_DATES * NUM_RUNS_PER_DRAW * len(features_kyes) * (T_hist + 1))) # reshape to (n_samples, n_calibration_dates * n_runs * n_features, T_hist + 1)
+        
+        
+        classifier = inference.append_simulations(theta_draws, batch).train()
+        posterior = inference.build_posterior(density_estimator=classifier)
+        proposal = posterior.set_default_x(x_o)
+        print(f"\nCompleted round {i + 1}/{rounds} of NRE training with NN embedding {nn.__class__.__name__}")
+    return posterior, proposals
+
+def train_npe_statistics_rounds (priors, stat_keys, full_params, initial_conditions, params_to_calibrate,observed, t_train, rounds = 3, n_sim_per_round = 100, features_kyes = None):
     
     inference = NPE_C(prior = priors)
     x_o = compute_statistics_dict(observed, stat_keys)
     x_o = torch.tensor(x_o, dtype=torch.float32)
     proposal = priors
+
+    if features_kyes is None:
+        features_kyes = ["real_gdp"]
 
     proposals = []
     for i in range(rounds):
@@ -208,41 +363,55 @@ def train_npe_statistics_rounds (priors, stat_keys, full_params, initial_conditi
             theta = proposal.sample((n_sim_per_round, ), show_progress_bars=False)
         else:
             theta = proposal.sample((n_sim_per_round, ))
-        sim_data = np.array([run_monte_carlo(rep_parameters(full_params, params_to_calibrate, sample.numpy()), initial_conditions, t_train, num_simulations=1) for sample in theta])
+        sim_data = np.array([run_monte_carlo(rep_parameters(full_params, params_to_calibrate, sample.numpy()), initial_conditions, t_train, num_simulations=10) for sample in theta])
         x = np.array([compute_statistics_dict(sim_out, stat_keys) for sim_out in sim_data])
         idx = remove_outliers(x, m = 8, stat_names=stat_keys)
         theta = theta[idx, :]
         x = x[idx, :]
         x = torch.tensor(x, dtype=torch.float32)
         density_estimator = inference.append_simulations(theta, x, proposal=proposal).train()
-        posterior = inference.build_posterior(density_estimator=density_estimator)
+        posterior = inference.build_posterior(density_estimator=density_estimator, sample_with="mcmc")
         proposal = posterior.set_default_x(x_o)
         
         print(f"\nCompleted round {i + 1}/{rounds} of NPE training with statistics {', '.join(stat_keys)}")
 
     return posterior, proposals
 
-def train_npe_nn_rounds (priors, nn, nn_transform, full_params, initial_conditions, params_to_calibrate,observed, t_train, rounds = 3, n_sim_per_round = 100):
+def train_npe_nn_rounds (priors, nn, nn_transform, full_params, initial_conditions, params_to_calibrate,observed, t_train, rounds = 3, n_sim_per_round = 100, features_kyes = None):
     dense_estimator = posterior_nn(
         model="nsf",
         embedding_net=nn,
         z_score_x="structured"
     )
+
+    if features_kyes is None:
+        features_kyes = ["real_gdp"]
+
     x_o = torch.tensor(nn_transform(observed), dtype=torch.float32)
     inference = NPE_C(prior = priors, density_estimator=dense_estimator)
     proposal = priors
     proposals = []
     for i in range(rounds):
         proposals.append(proposal)
+
         if i > 0:
             theta = proposal.sample((n_sim_per_round, ), show_progress_bars=False)
         else:
-            theta = proposal.sample((n_sim_per_round,))
-        sim_data = np.array([run_monte_carlo(rep_parameters(full_params, params_to_calibrate, sample.numpy()), initial_conditions, t_train, num_simulations=1) for sample in theta])
+            theta = proposal.sample((n_sim_per_round, ))
+
+        # batch, theta_draws = gen_batch(FIRST_CALIBRATION_DATE, 
+        #                                t_train, proposal, params_to_calibrate, n_sim_per_round, NUM_RUNS_PER_DRAW, features_kyes)
+
+        paramters = [rep_parameters(full_params, params_to_calibrate, sample.numpy()) for sample in theta]
+        sim_data = np.array([run_monte_carlo(params, initial_conditions, t_train, num_simulations=10) for params in paramters])
         sim_data = sim_data.reshape((sim_data.shape[0], -1)) # reshape to (n_simulations, T_hist + 1) for CNN input
-        x = torch.tensor(nn_transform(sim_data), dtype=torch.float32)
+        
+        ### batch: (n_samples, NUM_CALIBRATION_DATES, n_runs, len(features_kyes), T_hist + 1) -> (n_samples * NUM_CALIBRATION_DATES * n_runs * len(features_kyes), T_hist + 1)
+        x = nn_transform(sim_data)
+        x = torch.tensor(x, dtype=torch.float32)
+        
         density_estimator = inference.append_simulations(theta, x, proposal=proposal).train()
-        posterior = inference.build_posterior(density_estimator=density_estimator)
+        posterior = inference.build_posterior(density_estimator=density_estimator, sample_with="mcmc")
         proposal = posterior.set_default_x(x_o)
         print(f"\nCompleted round {i + 1}/{rounds} of NPE training with NN embedding {nn.__class__.__name__}")
     return posterior, proposals
@@ -273,6 +442,73 @@ def train_npe_nn (priors, prior_samples, sim_raw, nn):
     net = npe.append_simulations(samples, npe_x).train()
     post = npe.build_posterior()
     return post
+
+def train_nre_nn_rounds (priors, nn, nn_transform, full_params, initial_conditions, params_to_calibrate,observed, t_train, rounds = 3, n_sim_per_round = 100, features_kyes = None):
+    classifier = classifier_nn(
+        model="mlp",
+        embedding_net_x=nn,
+        z_score_x="structured"
+    )
+
+    if features_kyes is None:
+        features_kyes = ["real_gdp"]
+
+    x_o = torch.tensor(nn_transform(observed), dtype=torch.float32)
+    inference = NRE(prior = priors, classifier=classifier)
+    proposal = priors
+    proposals = []
+
+    for i in range(rounds):
+        proposals.append(proposal)
+
+        if i > 0:
+            theta = proposal.sample((n_sim_per_round, ), show_progress_bars=False)
+        else:
+            theta = proposal.sample((n_sim_per_round, ))
+
+        paramters = [rep_parameters(full_params, params_to_calibrate, sample.numpy()) for sample in theta]
+        sim_data = np.array([run_monte_carlo(params, initial_conditions, t_train, num_simulations=10) for params in paramters])
+        sim_data = sim_data.reshape((sim_data.shape[0], -1)) # reshape to (n_simulations, T_hist + 1) for CNN input
+        
+        x = nn_transform(sim_data)
+        x = torch.tensor(x, dtype=torch.float32)
+        
+        classifier = inference.append_simulations(theta, x).train()
+        posterior = inference.build_posterior(density_estimator=classifier)
+        proposal = posterior.set_default_x(x_o)
+        print(f"\nCompleted round {i + 1}/{rounds} of NRE training with NN embedding {nn.__class__.__name__}")
+    return posterior, proposals
+
+def train_nre_statistics_rounds (priors, stat_keys, full_params, initial_conditions, params_to_calibrate, observed, t_train, rounds = 3, n_sim_per_round = 100, features_kyes = None):
+    inference = NRE(prior = priors)
+    x_o = compute_statistics_dict(observed, stat_keys)
+    x_o = torch.tensor(x_o, dtype=torch.float32)
+    proposal = priors
+
+    if features_kyes is None:
+        features_kyes = ["real_gdp"]
+
+    proposals = []
+    for i in range(rounds):
+        proposals.append(proposal)
+        if i > 0:
+            theta = proposal.sample((n_sim_per_round, ), show_progress_bars=False)
+        else:
+            theta = proposal.sample((n_sim_per_round, ))
+        sim_data = np.array([run_monte_carlo(rep_parameters(full_params, params_to_calibrate, sample.numpy()), initial_conditions, t_train, num_simulations=10) for sample in theta])
+        x = np.array([compute_statistics_dict(sim_out, stat_keys) for sim_out in sim_data])
+        idx = remove_outliers(x, m = 8, stat_names=stat_keys)
+        theta = theta[idx, :]
+        x = x[idx, :]
+        x = torch.tensor(x, dtype=torch.float32)
+
+        density_estimator = inference.append_simulations(theta, x).train()
+        posterior = inference.build_posterior(density_estimator=density_estimator)
+        proposal = posterior.set_default_x(x_o)
+        
+        print(f"\nCompleted round {i + 1}/{rounds} of NRE training with statistics {', '.join(stat_keys)}")
+
+    return posterior, proposals
 
 def pplot_stat (posterior, params, filename):
 
@@ -322,10 +558,10 @@ def forecast (posterior, final_params, final_initial):
 
 def plot_forecasts (forecasts : dict[str, np.ndarray], realized_future, parameters_to_calibrate, bounds):
     plt.figure(figsize=(12, 8))
-    plt.plot(range(1, T_forecast + 1), realized_future["real"], label="Real GDP", color="black")
+    plt.plot(range(1, T_forecast + 1), realized_future["real_gdp"], label="Real GDP", color="black")
     rolling_rsmfes = {}
     for key, forecast in forecasts.items():
-        rmsfe = compute_rmsfes(forecast, realized_future["real"].values)
+        rmsfe = compute_rmsfes(forecast, realized_future["real_gdp"].values)
         rolling_rsmfes[key] = rmsfe
         print(f"RMSFE of {key} forecast: {rmsfe[-1]:.4f}")
         plt.plot(range(1, T_forecast + 1), forecast, label=f"{key} Forecast")
@@ -345,38 +581,48 @@ def compute_rmsfes (forecast, realized):
 
 if __name__ == "__main__":
 
-    priors_samples, npe_x_base, raw, parameters_to_calibrate, bounds = load_data()
-    parameters_to_calibrate = parameters_to_calibrate.tolist()
+    if "load" in argv:
+         priors_samples, npe_x_base, raw, parameters_to_calibrate, bounds = load_data()
+    else:
+        priors_samples, npe_x_base, raw, parameters_to_calibrate, bounds = load_custom()
+    # parameters_to_calibrate = parameters_to_calibrate.tolist()
 
     ### initial calibration
-    initial_calibration = datetime(2010, 3, 31)
+    initial_calibration = FIRST_CALIBRATION_DATE
 
-    n = 6 # number of years to simulate -> 5 years
+    n = 3 # number of years to simulate -> 5 years
     T_hist = 4 * n - 1 # quaters
-    final_calibration = datetime(initial_calibration.year + T_hist // 4, 12, initial_calibration.day)
+    final_calibration = datetime(initial_calibration.year + NUM_CALIBRATION_DATES, 12, initial_calibration.day)
 
-    T_forecast = 4 * 4 # 4 years forecast
+    T_forecast = 4 * 3 # 4 years forecast
     date_forecast = datetime(final_calibration.year + T_forecast // 4, final_calibration.month, final_calibration.day)
     ### real data
-    csv_data = pd.read_csv("data_npz/italy_real_gdp.csv", parse_dates=["observation_date"])
-    csv_data = csv_data[csv_data["observation_date"] >= initial_calibration]
-    quarterly_dates, bit = [np.array(x) for x in jl.get_real([])]
 
-    n = len(quarterly_dates)
-    df = pd.DataFrame({"date": quarterly_dates.flatten(), "real": bit.flatten()})
+    keys = [
+        "real_gdp",
+        "gdp_deflator",
+        "nominal_gva",
+    ]
+
+    quarterly_dates, bit = [np.array(x) for x in jl.get_real(keys)]
+
+    df = pd.DataFrame({"date": quarterly_dates.flatten(), "real_gdp": bit.flatten()})
     df = df[df["date"] >= initial_calibration]
-    df = df[df["date"] <= date_forecast]
 
-    observed_series = df[df["date"] <= final_calibration]
+    observed_series = df[df["date"] <= final_calibration + pd.DateOffset(years=3)]
 
     realized_future = df[df["date"] > final_calibration]
-
-    assert len(observed_series) == T_hist + 1
-    assert len(realized_future) == T_forecast
+    realized_future = realized_future.head(T_forecast)
 
     hist_params, hist_initial = jl.calibrate(initial_calibration.year, initial_calibration.month, initial_calibration.day)
 
     final_params, final_initial = jl.calibrate(final_calibration.year, final_calibration.month, final_calibration.day)
+
+    hist_params["omega"] = 0.5
+    hist_params["lambda_p"] = 2
+
+    final_params["omega"] = 0.5
+    final_params["lambda_p"] = 2
 
     n_hist = priors_samples.shape[0]
 
@@ -401,29 +647,42 @@ if __name__ == "__main__":
     s_base_seq = s_base + ["sequential"]
     s1_seq = s1 + ["sequential"]    
 
+
+    ### keys for the statistics-based NPEs and NREs
+
+
+    ### NPE
     statistics_versions = []
     statistics_posteriors = []
+    statistics_nres = []
     posteriors_hist = []
 
     for i, s in enumerate(statistics_versions):
         final_posterior, posteriors = train_npe_statistics_rounds(priors, s, hist_params, hist_initial, 
-                                          parameters_to_calibrate, observed_series["real"].values, 
+                                          parameters_to_calibrate, observed_series["real_gdp"].values[:T_hist + 1], 
                                           t_train = T_hist, rounds=ROUNDS, n_sim_per_round=NUM_SIM_PER_ROUND)
         posteriors_hist.append((s, posteriors))
         statistics_posteriors.append(final_posterior)
-
-    # statistics_versions += [s_base + ["sequential"], s1 + ["sequential"]]
+    
+    for i, s in enumerate(statistics_versions):
+        final_ratio, ratios = train_nre_statistics_rounds(priors, s, hist_params, hist_initial, 
+                                          parameters_to_calibrate, observed_series["real_gdp"].values[:T_hist + 1], 
+                                          t_train = T_hist, rounds=ROUNDS, n_sim_per_round=NUM_SIM_PER_ROUND)
+        
+        statistics_nres.append(final_ratio)
 
     ### networking embedding
     nns = []
     nn_posteriors = []
-    input_transforms = []
+    nn_nres = []
+    nn_transforms = []
     nn_versions = []
+    nn_keys = []
 
     if "nn" in argv:
 
         nn_raw = CausalCNNEmbedding(
-            input_shape=(T_hist + 1, ), # length of the time series
+            input_shape=(T_hist, ), # length of the time series
             num_conv_layers=2,
             pool_kernel_size=3,
             output_dim=12,
@@ -447,33 +706,59 @@ if __name__ == "__main__":
 
         ### rnn as in Dyer et. al. (2024) and labour market
         nn_rnn = RNN(
-            input_dim=T_hist + 1,
-            flavour="elman",
+            input_dim=T_hist,
+            flavour="gru",
             hidden_dim=32,
             num_layers=2,
             mlp_dims=12
         )
 
+        seq_multivariate = SeqEmbedding(
+            T = T_hist,
+            n_features = len(keys),
+            hidden_size = 64,
+            out_dim = 16
+        )
+
+        batched_multivariate = Batched(
+            calibration_dates=NUM_CALIBRATION_DATES,
+            n_runs=NUM_RUNS_PER_DRAW,
+            n_features=len(keys),
+            T=T_hist,
+            hidden_size=64,
+            out_dim=16
+        )
+
+
         s_nn = ["mean", "std", "yearly_corr", "ar1_coeff", "ar2_coeff", "min", "skewness", "kurtosis"]
 
         nn_cnn_mixture = CNN_GDP(stat_keys=s_nn, in_channels=3, conv_dims=[16, 32], summary_dims=16, out_dims=32, pool_kernel_size=1)
 
-        nns += [nn_cnn_mixture]
-        input_transforms +=  [to_cnn3]
-        nn_versions += ["cnn_mixture"]
+        nns += [ batched_multivariate]
+        #  nn_transforms += [lambda x: reduction(x)[:, 1:], lambda x: to_cnn3(reduction(x)), to_seq_multivariate]
+        nn_transforms += [lambda x: x[..., 1:]]
+        nn_versions += ["batched_multivariate"]
+        nn_keys += [keys]
 
-        assert len(nns) == len(input_transforms) == len(nn_versions)
+        assert len(nns) == len(nn_versions) == len(nn_transforms) == len(nn_keys), "Length of nns, nn_versions, nn_transforms and nn_keys must be the same"
 
     ### append NN-based posteriors
     print("Training NN-based NPEs...")
-    observed_series_nn = observed_series["real"].values.reshape(1, -1) # reshape to (1, T_hist + 1) for CNN input
-    for nn, transform, name in zip(nns, input_transforms, nn_versions):
+    # print(f"Observed series for NN input (shape {observed_series['real_gdp'].values.shape}): {observed_series['real_gdp'].values}")
+    observed_series_nn = observed_series["real_gdp"].values.reshape((1, -1))[:, :T_hist + 1]
+    for nn, transform, name, key_list in zip(nns, nn_transforms, nn_versions, nn_keys):
         print(f"\nTraining NPE with NN embedding: {name}")
-        post, posteriors = train_npe_nn_rounds(priors, nn, transform, hist_params, hist_initial, parameters_to_calibrate, observed_series_nn, T_hist, rounds=ROUNDS, n_sim_per_round=NUM_SIM_PER_ROUND)
+        post, posteriors = train_npe_nn_batched(priors, nn, transform, parameters_to_calibrate, observed_series, T_hist, key_list, rounds=ROUNDS, n_sim_per_round=NUM_SIM_PER_ROUND)
         # post = train_npe_nn(priors, priors_samples, transform(raw), nn)
         nn_posteriors.append(post)
-        nn_versions.append(f"nn_{name}")
-        posteriors_hist.append((f"nn_{name}", posteriors))
+
+        posteriors_hist.append((f"npe_nn_{name}", posteriors))
+
+    # print("Training NN-based NREs...")
+    # for nn, transform, name in zip(nns, nn_transforms, nn_versions):
+    #     print(f"\nTraining NRE with NN embedding: {name}")
+    #     post, posteriors = train_nre_nn_rounds(priors, nn, transform, hist_params, hist_initial, parameters_to_calibrate, observed_series_nn, T_hist, rounds=ROUNDS, n_sim_per_round=NUM_SIM_PER_ROUND)
+    #     nn_nres.append(post)
 
     if "save" in argv:
         posteriors = {f"stat_{','.join(to_short_names(s))}": p for p, s in zip(statistics_posteriors, statistics_versions)}
@@ -487,20 +772,32 @@ if __name__ == "__main__":
     if "pp_forecast" in argv:
         ### pairplots for statistics-based NPE
         for p, s in zip(statistics_posteriors, statistics_versions):
-            pplot_stat(p, final_params, filename = ",".join(to_short_names(s)) + "_forecast")
+            pplot_stat(p, final_params, filename = "npe_ " + ",".join(to_short_names(s)) + "_forecast")
         
-        ### for 
-        for p, transform, name in zip(nn_posteriors, input_transforms, nn_versions):
-            pplot_stat(p, final_params, filename = f"nn_{name}_forecast")
+        for r, s in zip(statistics_nres, statistics_versions):
+            pplot_stat(r, final_params, filename = "nre_ " + ",".join(to_short_names(s)) + "_forecast")
 
-    
+        ### for 
+        for p, transform, name in zip(nn_posteriors, nn_transforms, nn_versions):
+            pplot_stat(p, final_params, filename = f"nn_npe_{name}_forecast")
+
+        for r, transform, name in zip(nn_nres, nn_transforms, nn_versions):
+            pplot_stat(r, final_params, filename = f"nn_nre_{name}_forecast")
+
     if "pp_history" in argv:
         ### pairplots for statistics-based NPE
         for p, s in zip(statistics_posteriors, statistics_versions):
-            pplot_stat(p, hist_params, filename = ",".join(to_short_names(s)) + "_hist")
+            pplot_stat(p, hist_params, filename = "npe_ " + ",".join(to_short_names(s)) + "_hist")
 
-        for p, transform, name in zip(nn_posteriors, input_transforms, nn_versions):
-            pplot_stat(p, hist_params, filename = f"nn_{name}_hist")
+        for r, s in zip(statistics_nres, statistics_versions):
+            pplot_stat(r, hist_params, filename = "nre_ " + ",".join(to_short_names(s)) + "_hist")
+
+        for p, transform, name in zip(nn_posteriors, nn_transforms, nn_versions):
+            pplot_stat(p, hist_params, filename = f"nn_npe_{name}_hist")
+
+
+        for r, transform, name in zip(nn_nres, nn_transforms, nn_versions):
+            pplot_stat(r, hist_params, filename = f"nn_nre_{name}_hist")
 
     if "ppc" in argv:
         ### for statistics
@@ -509,22 +806,28 @@ if __name__ == "__main__":
             samples = p.sample((100,))
             trajectories = np.array([run_monte_carlo(rep_parameters(hist_params, parameters_to_calibrate, sample.numpy()), hist_initial, T_hist, num_simulations=10) for sample in samples])
             file_name = f"pngs/ppc_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_p{len(parameters_to_calibrate)}_{','.join(to_short_names(s))}.png"
-            ppc_trajectories(observed_series["real"].values, trajectories, file_name)
+            ppc_trajectories(observed_series["real_gdp"].values[:T_hist], trajectories, file_name)
         
         ### for NN-based
-        for p, transform, name in zip(nn_posteriors, input_transforms, nn_versions):
+        for p, transform, name in zip(nn_posteriors, nn_transforms, nn_versions):
             # x_o = transform(observed_series_nn)
             samples = p.sample((100,))
             trajectories = np.array([run_monte_carlo(rep_parameters(hist_params, parameters_to_calibrate, sample.numpy()), hist_initial, T_hist, num_simulations=10) for sample in samples])
             file_name = f"pngs/ppc_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_p{len(parameters_to_calibrate)}_nn{name}.png"
-            ppc_trajectories(observed_series["real"].values, trajectories, file_name)
+            ppc_trajectories(observed_series["real_gdp"].values[:T_hist], trajectories, file_name)
 
     if "ppc_stat" in argv:
         for p, s in zip(statistics_posteriors, statistics_versions):
-            x_o = compute_statistics_dict(observed_series["real"].values, s)
+            x_o = compute_statistics_dict(observed_series["real_gdp"].values[:T_hist], s)
             # samples = p.sample((100,))
             stats_out = np.array([compute_statistics_dict(run_monte_carlo(rep_parameters(hist_params, parameters_to_calibrate, sample.numpy()), hist_initial, T_hist, num_simulations=10), s) for sample in samples])
-            file_name = f"pngs/ppc_stat_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_p{len(parameters_to_calibrate)}_{','.join(to_short_names(s))}.png"
+            file_name = f"pngs/ppc_stat_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_p{len(parameters_to_calibrate)}_npe_{','.join(to_short_names(s))}.png"
+            ppc_plot(x_o, stats_out, file_name)
+        
+        for r, s in zip(statistics_nres, statistics_versions):
+            x_o = compute_statistics_dict(observed_series["real_gdp"].values[:T_hist], s)
+            stats_out = np.array([compute_statistics_dict(run_monte_carlo(rep_parameters(hist_params, parameters_to_calibrate, sample.numpy()), hist_initial, T_hist, num_simulations=10), s) for sample in samples])
+            file_name = f"pngs/ppc_stat_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_p{len(parameters_to_calibrate)}_nre_{','.join(to_short_names(s))}.png"
             ppc_plot(x_o, stats_out, file_name)
 
     if "sbc" in argv:
@@ -543,16 +846,15 @@ if __name__ == "__main__":
         
     if "forecast" in argv:
         forecasts = {",".join(to_short_names(s)): forecast(p, final_params, final_initial) for p, s in zip(statistics_posteriors, statistics_versions)}
-        forecasts.update({f"nn_{name}": forecast(p, final_params, final_initial) for p, transform, name in zip(nn_posteriors, input_transforms, nn_versions)})
+        forecasts.update({f"nn_{name}": forecast(p, final_params, final_initial) for p, name in zip(nn_posteriors, nn_versions)})
+        forecasts.update({f"nre_{','.join(to_short_names(s))}": forecast(r, final_params, final_initial) for r, s in zip(statistics_nres, statistics_versions)})
+        forecasts.update({f"nn_nre_{name}": forecast(r, final_params, final_initial) for r, name in zip(nn_nres, nn_versions)})
         
         abm_forecast = run_monte_carlo(final_params, final_initial, T_forecast, num_simulations=100)[1:]
         forecasts["ABM_base"] = abm_forecast
 
-        print(forecasts.keys())
-        print(forecasts.values())
-
         if npe_x_base is not None and "base" in argv:
-            forecast_statistic = torch.tensor(compute_statistics(observed_series["real"].values))
+            forecast_statistic = torch.tensor(compute_statistics(observed_series["real_gdp"].values))
             npe_forecast_params = posterior.sample((1000, ), x = forecast_statistic).mean(dim= 0)
             npe_forecast_params = rep_parameters(final_params, parameters_to_calibrate, npe_forecast_params)
             npe_forecast = run_monte_carlo(npe_forecast_params, final_initial, T_forecast, num_simulations=100)[1:]

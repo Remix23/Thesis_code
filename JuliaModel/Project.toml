@@ -5,6 +5,7 @@ authors = ["Remix23 <keru1000@gmail.com>"]
 
 [deps]
 BeforeIT = "ca9fcad7-41d0-4f76-b1e5-366c28bce52e"
+BeforeIT_Modded = "64b2ce3e-f9a0-45ac-b2b6-e3cdfc3515b9"
 CalibrateBeforeIT = "05295df1-6f6a-4591-b1c3-a476c06dd2c5"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
@@ -14,6 +15,7 @@ Tables = "bd369af6-aec1-5ad0-b16a-f7cc5008161c"
 
 [compat]
 BeforeIT = "0.5.0"
+BeforeIT_Modded = "0.5.0"
 CalibrateBeforeIT = "0.1.0"
 DataFrames = "1.8.2"
 Dates = "1.11.0"

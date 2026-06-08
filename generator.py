@@ -39,7 +39,7 @@ def run_monte_carlo(parameters, initial_conditions, T, num_simulations, keys):
 
 
 ### initial calibration
-initial_calibration = datetime(2010, 3, 31)
+initial_calibration = datetime(2011, 3, 31)
 
 n = 3  # number of years to simulate -> 3 years
 T_hist = 4 * n - 1  # quaters
@@ -53,14 +53,7 @@ date_forecast = datetime(
     final_calibration.month,
     final_calibration.day,
 )
-### real data
 
-quarterly_dates, bit = [np.array(x) for x in jl.get_real(["anc"])]
-
-n = len(quarterly_dates)
-df = pd.DataFrame({"date": quarterly_dates.flatten(), "real": bit.flatten()})
-df = df[df["date"] >= initial_calibration]
-df = df[df["date"] <= date_forecast]
 
 hist_params, hist_initial = jl.calibrate(
     initial_calibration.year, initial_calibration.month, initial_calibration.day
@@ -71,18 +64,25 @@ final_params, final_initial = jl.calibrate(
 )
 ### gen historical date for NPE
 
-# parameters_to_calibrate = ["psi", "alpha_G", "beta_E", "alpha_E", "xi_gamma"]
-parameters_to_calibrate = ["theta", "zeta", "zeta_LTV", "zeta_b"]
+# parameters_to_calibrate = ["zeta_b", "omega", "lambda_p"]
+parameters_to_calibrate = ["theta", "zeta", "zeta_LTV", "zeta_b", "omega", "lambda_p"]
 
 priors_bounds = [
-    (0.01, 0.99),  # theta
-    (0.01, 0.5),  # zeta
-    (0.1, 1.2),  # zeta_LTV
-    (0, 2),  # zeta_B
+    (0, 1),  # theta
+    (0.03, 0.5),  # zeta
+    (0.3, 1),  # zeta_LTV
+    (0, 2),  # zeta_b
+    (0, 1),  # omega
+    (0.1, 4),  # lambda_p
 ]
 
+assert len(parameters_to_calibrate) == len(priors_bounds), "Number of parameters to calibrate must match number of prior bounds."
+
 for param, bounds in zip(parameters_to_calibrate, priors_bounds):
-    calibrated = hist_params[param]
+    calibrated = hist_params.get(param, None)
+    if calibrated is None: 
+        print(f"Parameter {param} with bounds {bounds} not found in historical calibration.")
+        continue
     if calibrated <= bounds[0] or calibrated >= bounds[1]:
         print(
             f"Warning: Parameter {param} with value {calibrated} is outside the bounds {bounds}"
@@ -104,14 +104,39 @@ priors = BoxUniform(low=priors_bounds[:, 0], high=priors_bounds[:, 1])
 
 avaible_keys = [
     "real_gdp",
+    "nominal_gdp",
+    "real_gva",
+    "nominal_gva",
     "gdp_deflator",
-
+    "real_household_consumption", 
+    "real_government_consumption",
+    "real_capitalformation",
+    "real_exports",
+    "real_imports",
+    "wages",
+    "euribor",
+    "gdp_deflator",
 ]
 
-def run_prior_check():
-    pass
+def run_prior_check(samples, real, cal_date):
+    ### samples: (n_samples, n_runs, len(keys), T + 1)
+    # real: (len(keys), T + 1)
+    # average accross runs
+    avg_samples = np.mean(samples, axis=1)  # (n_samples, len
+    for i in range(avg_samples.shape[1]): ### for all keys
+        plt.figure(figsize=(10, 6))
+        plt.plot(real[i, :], label="Real", color="black", linewidth=2)
+        for j in range(avg_samples.shape[0]): ### for all samples
+            plt.plot(avg_samples[j, i, :], alpha=0.5, color="blue")
+        plt.title(f"Prior check for key: {i}")
+        plt.xlabel("Time")
+        plt.ylabel(i)
+        plt.savefig(f"pngs/prior_check_key_{i}_{cal_date.strftime('%Y-%m-%d')}.png")
+        plt.close()
+    
+    
 
-def gen_sample (calibration_date, T, priors, params_to_calibrate, n_samples, n_runs, keys):
+def gen_sample (calibration_date, T, priors, params_to_calibrate, n_samples, n_runs, keys, observed_real):
     theta_draws = priors.sample((n_samples,))
     params, initial_conditions = jl.calibrate(
         calibration_date.year, calibration_date.month, calibration_date.day
@@ -123,18 +148,30 @@ def gen_sample (calibration_date, T, priors, params_to_calibrate, n_samples, n_r
         sim_out = np.array(sim_out)
         samples[i, :, :, :] = sim_out
     if "prior_check" in argv:
-        run_prior_check()
+        run_prior_check(samples, observed_real, calibration_date)
     return theta_draws.numpy(), samples
 
-num_calibrations = 4
+num_calibrations = 6
 n_runs = 10
-keys = ["real_gdp", "gdp_deflator"]
+keys = ["real_gdp", "gdp_deflator", "real_gva"]
 samples = np.zeros((n_histories, num_calibrations, n_runs, len(keys), T_hist + 1))
 prior_draws = np.zeros((num_calibrations, n_histories, len(parameters_to_calibrate)))
 
-for i in range(4):
+### real data
+
+data, quarterly_dates = jl.get_real(keys)
+
+n = len(quarterly_dates)
+df = pd.DataFrame({"date": np.array(quarterly_dates).flatten(), **{key: np.array(data[key]).flatten() for key in keys}})
+
+df = df[df["date"] >= initial_calibration]
+
+print(df.head())
+
+for i in range(num_calibrations):
     cal_date_year = initial_calibration.year + i
     cal_date = datetime(cal_date_year, initial_calibration.month, initial_calibration.day)
+    observed_real = df[df["date"] >= cal_date]["real_gdp"].values.reshape(1, -1)[:, : T_hist + 1]
     theta_draws, sample = gen_sample(
         calibration_date=cal_date,
         T=T_hist,
@@ -143,11 +180,14 @@ for i in range(4):
         n_samples=n_histories,
         n_runs=n_runs,
         keys=keys,
+        observed_real=observed_real
     )
     samples[:, i, :, :] = sample
     prior_draws[i, :, :] = theta_draws
-    print(f"Calibration date: {cal_date}, sample shape: {sample.shape}")
 
+    print(f"Calibration date: {cal_date}, \nSample shape: (n_samples, n_runs, len(keys), T_hist + 1) = {sample.shape}")
+
+print(df.head(n = 20))
 ### save
 np.savez(
     f"data/prior_samples_n{n_histories}_{','.join(parameters_to_calibrate)}_bounds{','.join([str(b) for b in priors_bounds.numpy()])}.npz",

@@ -1,6 +1,7 @@
 module JuliaModel
 
-import BeforeIT
+
+import BeforeIT_Modded
 using Dates
 
 function processSimulationOutput(data, keys)
@@ -14,7 +15,12 @@ function processSimulationOutput(data, keys)
                 println("Key $(key) not found in model output.")
                 continue
             end
-            out[i, :] = getfield(data, s)
+            x = getfield(data, s)
+            if ndims(x) != 1
+                println("Warning: $(key) is not 1-dimensional, skipping.")
+                continue
+            end
+            out[i, :] = x
         end
         
     end
@@ -27,14 +33,14 @@ function run_simulation(parameters, initial_conditions, T, keys)
     else
         parallel = false
     end
-    model = BeforeIT.Model(parameters, initial_conditions)
-    data = BeforeIT.run!(model, T, parallel=parallel)
+    model = BeforeIT_Modded.Model(parameters, initial_conditions)
+    data = BeforeIT_Modded.run!(model, T, parallel=parallel)
     return processSimulationOutput(data.data, keys)
 end
 
 function run_monte_carlo(parameters, initial_conditions, T, num_simulations, keys)
-    models = [BeforeIT.Model(parameters, initial_conditions) for _ in 1:num_simulations]
-    data = BeforeIT.ensemblerun!(models, T, parallel=true)
+    models = [BeforeIT_Modded.Model(parameters, initial_conditions) for _ in 1:num_simulations]
+    data = BeforeIT_Modded.ensemblerun!(models, T, parallel=true)
     out = zeros(num_simulations, length(keys), T + 1)
     for (i, d) in enumerate(data)
         out[i, :, :] = processSimulationOutput(d.data, keys)
@@ -43,25 +49,34 @@ function run_monte_carlo(parameters, initial_conditions, T, num_simulations, key
 end
 
 function run_for_different_parameters(parameters_list, initial_conditions, T, keys)
-    models = [BeforeIT.Model(parameters, initial_conditions) for parameters in parameters_list]
-    data = BeforeIT.ensemblerun!(models, T, parallel=true)
-    out = [processSimulationOutput(d.data, keys) for d in data]
+    models = [BeforeIT_Modded.Model(parameters, initial_conditions) for parameters in parameters_list]
+    data = BeforeIT_Modded.ensemblerun!(models, T, parallel=true)
+    out = zeros(length(parameters_list), length(keys), T + 1)
+    for (i, d) in enumerate(data)
+        out[i, :, :] = processSimulationOutput(d.data, keys)
+    end
     return out
 end
 
 function get_real(keys)
-    cal = BeforeIT.ITALY_CALIBRATION
-    d = cal.data["real_gdp_quarterly"]
+    
+    cal = BeforeIT_Modded.ITALY_CALIBRATION
+    out = Dict()
+    for key in keys
+        name = key * "_quarterly"
+        out[key] = cal.data[name]
+    end
     first = DateTime(1996, 3, 31)
-    quarters = length(d)
+    quarters = length(out[keys[1]])
     quarterly_dates = [first + Month(3 * i) for i in 0:(quarters - 1)]
-    return [quarterly_dates, d]
+    
+    return [out, quarterly_dates]
 end
 
 function calibrate(year, month, day) 
-    cal = BeforeIT.ITALY_CALIBRATION
+    cal = BeforeIT_Modded.ITALY_CALIBRATION
     calibration_date = DateTime(year, month, day)
-    parameters, initial_conditions = BeforeIT.get_params_and_initial_conditions(cal, calibration_date; scale = 0.0001)
+    parameters, initial_conditions = BeforeIT_Modded.get_params_and_initial_conditions(cal, calibration_date; scale = 0.0001)
     println("Calibrating model with date: ", calibration_date)
     return parameters, initial_conditions
 end
