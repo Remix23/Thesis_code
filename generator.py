@@ -190,7 +190,7 @@ for i in range(num_calibrations):
 print(df.head(n = 20))
 ### save
 np.savez(
-    f"data/prior_samples_n{n_histories}_{','.join(parameters_to_calibrate)}_bounds{','.join([str(b) for b in priors_bounds.numpy()])}.npz",
+    f"data_npz/prior_samples_n{n_histories}_{','.join(parameters_to_calibrate)}_bounds{','.join([str(b) for b in priors_bounds.numpy()])}.npz",
     sim_out=samples,
     theta_draw = prior_draws,
     bounds = priors_bounds.numpy(),

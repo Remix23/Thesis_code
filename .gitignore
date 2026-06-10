@@ -12,4 +12,5 @@ data
 *.npz
 *.pkl
 *.zip
+*.pdf
 __pycache__
