@@ -2,7 +2,34 @@ module JuliaModel
 
 
 import BeforeIT_Modded
+import BeforeIT_Modded: toannual, toannual_mean
+
 using Dates
+
+function toannual(ftsa::AbstractMatrix)
+    m = 4
+    fts = zeros(size(ftsa, 1), cld(size(ftsa, 2), m))
+
+    for (j, i) in enumerate(1:m:size(ftsa, 2))
+        fts[:, j] = sum(ftsa[:, i:min(i + m - 1, size(ftsa, 2))], dims = 2)
+    end
+
+    return fts
+end
+
+function toannual_mean(ftsa::AbstractMatrix)
+    m = 4
+    fts = zeros(size(ftsa, 1), cld(size(ftsa, 2), m))
+
+    for (j, i) in enumerate(1:m:size(ftsa, 2))
+        block = ftsa[:, i:min(i + m - 1, size(ftsa, 2))]
+        fts[:, j] = sum(block, dims = 2) ./ size(block, 2)
+    end
+
+    return fts
+end
+
+
 
 function processSimulationOutput(data, keys)
     out = zeros(length(keys), size(data.real_gdp, 1))
@@ -38,12 +65,21 @@ function run_simulation(parameters, initial_conditions, T, keys)
     return processSimulationOutput(data.data, keys)
 end
 
-function run_monte_carlo(parameters, initial_conditions, T, num_simulations, keys)
-    models = [BeforeIT_Modded.Model(parameters, initial_conditions) for _ in 1:num_simulations]
-    data = BeforeIT_Modded.ensemblerun!(models, T, parallel=true)
+function run_monte_carlo(parameters, initial_conditions, T, num_simulations, keys, calibration_date, country)
+    real_data = BeforeIT_Modded.ITALY_CALIBRATION.data
+
+    model = BeforeIT_Modded.Model(parameters, initial_conditions)
+    model_vector = BeforeIT_Modded.ensemblerun!((deepcopy(model) for _ in 1:num_simulations), T, parallel=true)
+    predictions_dict = BeforeIT_Modded.get_predictions_from_sims(BeforeIT_Modded.DataVector(model_vector), real_data, calibration_date)
     out = zeros(num_simulations, length(keys), T + 1)
-    for (i, d) in enumerate(data)
-        out[i, :, :] = processSimulationOutput(d.data, keys)
+    for key in keys
+        if !haskey(predictions_dict, key)
+            println("Key $(key) not found in predictions, skipping.")
+            continue
+        end
+        for i in 1:num_simulations
+            out[i, findfirst(==(key), keys), :] = predictions_dict[key][:, i]
+        end
     end
     return out
 end
@@ -58,12 +94,12 @@ function run_for_different_parameters(parameters_list, initial_conditions, T, ke
     return out
 end
 
-function get_real(keys)
+function get_real(keys, country)
     
     cal = BeforeIT_Modded.ITALY_CALIBRATION
     out = Dict()
     for key in keys
-        name = key * "_quarterly"
+        name = key
         out[key] = cal.data[name]
     end
     first = DateTime(1996, 3, 31)
@@ -73,11 +109,10 @@ function get_real(keys)
     return [out, quarterly_dates]
 end
 
-function calibrate(year, month, day) 
+function calibrate(year, month, day, country) 
     cal = BeforeIT_Modded.ITALY_CALIBRATION
     calibration_date = DateTime(year, month, day)
     parameters, initial_conditions = BeforeIT_Modded.get_params_and_initial_conditions(cal, calibration_date; scale = 0.0001)
-    println("Calibrating model with date: ", calibration_date)
     return parameters, initial_conditions
 end
 end # module JuliaModel

@@ -156,7 +156,6 @@ class Batched(nn.Module):
 			input_size=n_features,
 			hidden_size = hidden_size,
 			num_layers=2,
-
 		)
 
 		self.head = nn.Linear(

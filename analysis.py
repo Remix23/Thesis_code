@@ -40,7 +40,7 @@ NUM_SIM_PER_ROUND = 1000
 
 NUM_RUNS_PER_DRAW = 5
 
-ROUNDS = 10
+ROUNDS = 2
 
 ### num of simulations per round: NUM_SIM_PER_ROUND * NUM_CALIBRATION_DATES * NUM_RUNS_PER_DRAW for batched
 ### num of simulations per round for non-batched: NUM_SIM_PER_ROUND * NUM_RUNS_PER_DRAW
@@ -73,8 +73,8 @@ def run_sim(parameters, initial_conditions, T, keys = ["real_gdp"]):
     data = jl.run_simulation(parameters, initial_conditions, T, keys)
     return np.array(data)
 
-def run_monte_carlo(parameters, initial_conditions, T, num_simulations, keys = ["real_gdp"]):
-    data = jl.run_monte_carlo(parameters, initial_conditions, T, num_simulations, keys)
+def run_monte_carlo(parameters, initial_conditions, T, num_simulations, calibration_date , keys = ["real_gdp"], country = "IT"):
+    data = jl.run_monte_carlo(parameters, initial_conditions, T, num_simulations, calibration_date, keys, country = country)
     data = np.mean(data, axis=0) # average across simulations
     return np.array(data).flatten()
 
@@ -93,17 +93,21 @@ def gen_sample (calibration_date, theta_draws, T, params_to_calibrate, n_runs, k
     samples = torch.zeros((theta_draws.shape[0], n_runs, len(keys), T + 1))
     for i, draw in enumerate(theta_draws):
         sim_parameters = rep_parameters(params, params_to_calibrate, draw)
-        sim_out = np.array(jl.run_monte_carlo(sim_parameters, initial_conditions, T, n_runs, keys))
+        sim_out = np.array(jl.run_monte_carlo(sim_parameters, initial_conditions, T, n_runs, calibration_date, keys, calibration_date, country = "IT"))
         sim_out = torch.tensor(sim_out, dtype=torch.float32)
         samples[i, :, :, :] = sim_out
 
     return samples
 
-def gen_batch (calibration_date, num_calibrations, T, priors, params_to_calibrate, n_samples, n_runs, keys) -> Tuple[torch.Tensor, torch.Tensor]:
+def gen_batch (calibration_date, num_calibrations, T, priors, params_to_calibrate, n_samples, n_runs, keys, load = False) -> Tuple[torch.Tensor, torch.Tensor]:
 
     batch = torch.zeros(
         n_samples, num_calibrations, n_runs, len(keys), T + 1
     )
+
+    if load:
+        pass
+
     if isinstance(priors, BoxUniform):
         theta_draws = priors.sample((n_samples, ))
     else:
@@ -132,7 +136,7 @@ def prepare_real (observed, keys, num_calibrations):
         observed_cal = observed[observed["date"] >= cal_date]
         if len(observed_cal) < T_hist + 1:
             raise ValueError(f"Not enough historical data for calibration date {cal_date.strftime('%Y-%m-%d')}. Required: {T_hist + 1}, Available: {len(observed_cal)}")
-        observed_cal = observed_cal.tail(T_hist + 1)
+        observed_cal = observed_cal.head(T_hist + 1)
         
         for j in range(NUM_RUNS_PER_DRAW):
             out[i, j, :, :] = torch.tensor(observed_cal[keys].values.T, dtype=torch.float32)
@@ -228,11 +232,11 @@ def compute_statistics_dict (sim_out, keys = None):
 
 ### load data
 def load_custom ():
-    parameters_to_calibrate = ["theta", "zeta", "zeta_LTV", "zeta_b", "omega", "lambda_p"]
+    parameters_to_calibrate = ["zeta_LTV", "zeta_b", "omega", "lambda_p"]
 
     priors_bounds = [
-        (0, 1),  # theta
-        (0.01, 0.5),  # zeta
+        # (0, 1),  # theta
+        # (0.01, 0.5),  # zeta
         (0.3, 1),  # zeta_LTV
         (0, 2),  # zeta_B
         (0, 1),  # omega
@@ -254,7 +258,6 @@ def load_data():
         print(f"{i + 1}. {file} | files: {np.load(path.join(data_folder, file)).files if file in listdir(data_folder) else np.load(path.join(getcwd(), file)).files}")
 
     file_index = int(input("Enter the number corresponding to the file you want to load: ")) - 1
-
 
     if file_index < 0 or file_index >= len(files):
         return load_custom()
@@ -306,7 +309,7 @@ def train_npe_nn_batched (priors, nn, nn_transform, params_to_calibrate, observe
         z_score_x="structured"
     )
     x_o = nn_transform(prepare_real(observed, features_kyes, num_calibrations).unsqueeze(0)).flatten() # (1, n_features, T_hist + 1) -> (1, embedding_dim)
-    inference = NPE_C(prior = priors, density_estimator=dense_estimator)
+    inference = NPE_C(prior = priors, density_estimator=dense_estimator, device="mps")
     proposal = priors
     proposals = []
     for i in range(rounds):
@@ -319,7 +322,7 @@ def train_npe_nn_batched (priors, nn, nn_transform, params_to_calibrate, observe
         # print(f"Transformed batch shape after NN transform: {batch.shape}")
         batch = batch.flatten(start_dim=1)
 
-        density_estimator = inference.append_simulations(theta_draws, batch, proposal=proposal).train()
+        density_estimator = inference.append_simulations(theta_draws, batch, proposal=proposal, data_device="cpu").train()
         posterior = inference.build_posterior(density_estimator=density_estimator)
         proposal = posterior.set_default_x(x_o)
         print(f"\nCompleted round {i + 1}/{rounds} of NPE training with NN embedding {nn.__class__.__name__}")
@@ -366,7 +369,7 @@ def train_npe_statistics_rounds (priors, stat_keys, full_params, initial_conditi
             theta = proposal.sample((n_sim_per_round, ), show_progress_bars=False)
         else:
             theta = proposal.sample((n_sim_per_round, ))
-        sim_data = np.array([run_monte_carlo(rep_parameters(full_params, params_to_calibrate, sample.numpy()), initial_conditions, t_train, num_simulations=1) for sample in theta])
+        sim_data = np.array([run_monte_carlo(rep_parameters(full_params, params_to_calibrate, sample.numpy()), initial_conditions, t_train, num_simulations=1, calibration_date=initial_calibration, keys=features_kyes, country="IT") for sample in theta])
         x = np.array([compute_statistics_dict(sim_out, stat_keys) for sim_out in sim_data])
         idx = remove_outliers(x, m = 8, stat_names=stat_keys)
         theta = theta[idx, :]
@@ -406,7 +409,7 @@ def train_npe_nn_rounds (priors, nn, nn_transform, full_params, initial_conditio
         #                                t_train, proposal, params_to_calibrate, n_sim_per_round, NUM_RUNS_PER_DRAW, features_kyes)
 
         paramters = [rep_parameters(full_params, params_to_calibrate, sample.numpy()) for sample in theta]
-        sim_data = np.array([run_monte_carlo(params, initial_conditions, t_train, num_simulations=1) for params in paramters])
+        sim_data = np.array([run_monte_carlo(params, initial_conditions, t_train, num_simulations=1, calibration_date=initial_calibration, keys=features_kyes, country="IT") for params in paramters])
         sim_data = sim_data.reshape((sim_data.shape[0], -1)) # reshape to (n_simulations, T_hist + 1) for CNN input
         
         ### batch: (n_samples, NUM_CALIBRATION_DATES, n_runs, len(features_kyes), T_hist + 1) -> (n_samples * NUM_CALIBRATION_DATES * n_runs * len(features_kyes), T_hist + 1)
@@ -443,7 +446,7 @@ def train_nre_nn_rounds (priors, nn, nn_transform, full_params, initial_conditio
             theta = proposal.sample((n_sim_per_round, ))
 
         paramters = [rep_parameters(full_params, params_to_calibrate, sample.numpy()) for sample in theta]
-        sim_data = np.array([run_monte_carlo(params, initial_conditions, t_train, num_simulations=NUM_RUNS_PER_DRAW) for params in paramters])
+        sim_data = np.array([run_monte_carlo(params, initial_conditions, t_train, num_simulations=NUM_RUNS_PER_DRAW, calibration_date=initial_calibration, keys=features_kyes, country="IT") for params in paramters])
         sim_data = sim_data.reshape((sim_data.shape[0], -1)) # reshape to (n_simulations, T_hist + 1) for CNN input
         
         x = nn_transform(sim_data)
@@ -471,7 +474,7 @@ def train_nre_statistics_rounds (priors, stat_keys, full_params, initial_conditi
             theta = proposal.sample((n_sim_per_round, ), show_progress_bars=False)
         else:
             theta = proposal.sample((n_sim_per_round, ))
-        sim_data = np.array([run_monte_carlo(rep_parameters(full_params, params_to_calibrate, sample.numpy()), initial_conditions, t_train, num_simulations=NUM_RUNS_PER_DRAW) for sample in theta])
+        sim_data = np.array([run_monte_carlo(rep_parameters(full_params, params_to_calibrate, sample.numpy()), initial_conditions, t_train, num_simulations=NUM_RUNS_PER_DRAW, calibration_date=initial_calibration, keys=features_kyes, country="IT") for sample in theta])
         x = np.array([compute_statistics_dict(sim_out, stat_keys) for sim_out in sim_data])
         idx = remove_outliers(x, m = 8, stat_names=stat_keys)
         theta = theta[idx, :]
@@ -488,7 +491,7 @@ def train_nre_statistics_rounds (priors, stat_keys, full_params, initial_conditi
 
 def pplot_stat (posterior, params, filename):
 
-    posterior_samples = posterior.sample((1000,))
+    posterior_samples = posterior.sample((4000,))
     _ = pairplot(
         posterior_samples,
         points=np.array([params[param] for param in parameters_to_calibrate])[None, :],
@@ -529,7 +532,7 @@ def forecast (posterior, final_params, final_initial):
     posterior_samples = posterior.sample((1000, ))
     npe_forecast_params = posterior_samples.mean(dim= 0)
     npe_forecast_params = rep_parameters(final_params, parameters_to_calibrate, npe_forecast_params)
-    npe_forecast = run_monte_carlo(npe_forecast_params, final_initial, T_forecast, num_simulations=100)[1:]
+    npe_forecast = run_monte_carlo(npe_forecast_params, final_initial, T_forecast, num_simulations=100, calibration_date=final_calibration, keys=keys, country="IT")[1:]
     return npe_forecast
 
 def plot_forecasts (forecasts : dict[str, np.ndarray], realized_future, parameters_to_calibrate, bounds):
@@ -578,9 +581,11 @@ if __name__ == "__main__":
         "real_gdp",
         "gdp_deflator",
         "nominal_gva",
+        "real_exports",
+        "real_government_consumption",
     ]
 
-    data, quarterly_dates = jl.get_real(keys)
+    data, quarterly_dates = jl.get_real(keys, "IT")
 
     df = pd.DataFrame({"date": np.array(quarterly_dates).flatten(), **{key: np.array(data[key]).flatten() for key in keys}})
 
@@ -603,7 +608,8 @@ if __name__ == "__main__":
 
     n_hist = priors_samples.shape[0]
 
-    priors = BoxUniform(low=torch.tensor(bounds)[:, 0], high=torch.tensor(bounds)[:, 1])
+    priors = BoxUniform(low=torch.tensor(bounds, device="mps")[:, 0], high=torch.tensor(bounds, device="mps")[:, 1])
+    # priors = torch.distributions.Uniform(low=torch.tensor(bounds, device="mps")[:, 0], high=torch.tensor(bounds, device="mps")[:, 1])
 
     ### NPE training
     if npe_x_base is not None and "base" in argv:
@@ -625,7 +631,7 @@ if __name__ == "__main__":
     s1_seq = s1 + ["sequential"]    
 
     ### NPE
-    statistics_versions = [s_base_seq]
+    statistics_versions = []
     statistics_posteriors = []
     statistics_nres = []
     posteriors_hist = []
@@ -710,12 +716,12 @@ if __name__ == "__main__":
 
         nn_cnn_mixture = CNN_GDP(stat_keys=s_nn, in_channels=3, conv_dims=[16, 32], summary_dims=16, out_dims=32, pool_kernel_size=1)
 
-        nns += [nn_raw, nn_diff, nn_3channels, nn_rnn, nn_cnn_mixture]
-        nn_transforms += [lambda x: reduction(x)[:, 1:],lambda x: to_growth_rate(reduction(x)), lambda x: to_cnn3(reduction(x)), lambda x: reduction(x)[:, 1:], lambda x: to_cnn3(reduction(x))]
+        nns += [batched_multivariate, seq_multivariate]
+        nn_transforms += [lambda x: x[..., 1:], to_seq_multivariate]
         # nn_transforms += [lambda x: reduction(x)[:, 1:], lambda x: to_growth_rate(reduction(x)), lambda x: x[..., 1:],  to_seq_multivariate]
-        nn_versions += ["raw", "diff", "3channels", "rnn", "cnn_mixture"]
-        nn_keys += [["real_gdp"], ["real_gdp"], ["real_gdp"], ["real_gdp"], ["real_gdp"]]
-        nn_cal_nums += [1, 1, 1, 1, 1]
+        nn_versions += ["batched_multivariate", "seq_multivariate"] # "cnn_log", "cnn_growth_rate", "cnn_level",
+        nn_keys += [keys, keys]
+        nn_cal_nums += [NUM_CALIBRATION_DATES, NUM_CALIBRATION_DATES]
 
         assert len(nns) == len(nn_versions) == len(nn_transforms) == len(nn_keys), "Length of nns, nn_versions, nn_transforms and nn_keys must be the same"
 
@@ -728,11 +734,11 @@ if __name__ == "__main__":
             # post = train_npe_nn(priors, priors_samples, transform(raw), nn)
             nn_posteriors.append(post)
 
-        print("Training NN-based NREs...")
-        for nn, transform, name, key_list, cal_num in zip(nns, nn_transforms, nn_versions, nn_keys, nn_cal_nums):
-            print(f"\nTraining NRE with NN embedding: {name}")
-            post, posteriors = train_nre_nn_batched(priors, nn, transform, parameters_to_calibrate, observed_series, T_hist, key_list,  rounds=ROUNDS, n_sim_per_round=NUM_SIM_PER_ROUND, num_calibrations=cal_num)
-            nn_nres.append(post)
+        # print("Training NN-based NREs...")
+        # for nn, transform, name, key_list, cal_num in zip(nns, nn_transforms, nn_versions, nn_keys, nn_cal_nums):
+        #     print(f"\nTraining NRE with NN embedding: {name}")
+        #     post, posteriors = train_nre_nn_batched(priors, nn, transform, parameters_to_calibrate, observed_series, T_hist, key_list,  rounds=ROUNDS, n_sim_per_round=NUM_SIM_PER_ROUND, num_calibrations=cal_num)
+        #     nn_nres.append(post)
 
     if "load_posteriors" in argv:
         post_dir = "trained_posteriors"
@@ -803,15 +809,15 @@ if __name__ == "__main__":
         ### for statistics
         for p, s in zip(statistics_posteriors, statistics_versions):
             # x_o = compute_statistics_dict(observed_series["real"].values, s)
-            samples = p.sample((100,))
-            trajectories = np.array([run_monte_carlo(rep_parameters(hist_params, parameters_to_calibrate, sample.numpy()), hist_initial, T_hist, num_simulations=NUM_RUNS_PER_DRAW) for sample in samples])
+            samples = p.sample((200,))
+            trajectories = np.array([run_monte_carlo(rep_parameters(hist_params, parameters_to_calibrate, sample.numpy()), hist_initial, T_hist, num_simulations=NUM_RUNS_PER_DRAW, calibration_date=initial_calibration) for sample in samples])
             file_name = f"pngs/ppc_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_p{len(parameters_to_calibrate)}_{','.join(to_short_names(s))}.png"
             ppc_trajectories(observed_series["real_gdp"].values[:T_hist+1], trajectories, file_name)
         
         ### for NN-based
         for p, transform, name in zip(nn_posteriors, nn_transforms, nn_versions):
-            samples = p.sample((100,))
-            trajectories = np.array([run_monte_carlo(rep_parameters(hist_params, parameters_to_calibrate, sample.numpy()), hist_initial, T_hist, num_simulations=NUM_RUNS_PER_DRAW) for sample in samples])
+            samples = p.sample((200,))
+            trajectories = np.array([run_monte_carlo(rep_parameters(hist_params, parameters_to_calibrate, sample.numpy()), hist_initial, T_hist, num_simulations=NUM_RUNS_PER_DRAW, calibration_date=initial_calibration) for sample in samples])
             file_name = f"pngs/ppc_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_p{len(parameters_to_calibrate)}_nn{name}.png"
             ppc_trajectories(observed_series["real_gdp"].values[:T_hist+1], trajectories, file_name)
 
@@ -834,7 +840,7 @@ if __name__ == "__main__":
         num_posterior_samples = 1000
         print(f"Running SBC with {num_sbc_saples} samples and {num_posterior_samples} posterior samples for each...")
 
-        if not path.exists(f"data_npz/sbc_data_{num_sbc_saples}_{num_posterior_samples}.pkl"):
+        if not path.exists(f"data_npz/sbc_data_{num_sbc_saples}_{num_posterior_samples}_{NUM_CALIBRATION_DATES}.pkl"):
             sim_data, theta = gen_batch(
                 FIRST_CALIBRATION_DATE, 
                 NUM_CALIBRATION_DATES, 
@@ -845,10 +851,10 @@ if __name__ == "__main__":
                 n_runs=NUM_RUNS_PER_DRAW, 
                 keys=keys
             )   
-            with open(f"data_npz/sbc_data_{num_sbc_saples}_{num_posterior_samples}.pkl", "wb") as f:
+            with open(f"data_npz/sbc_data_{num_sbc_saples}_{num_posterior_samples}_{NUM_CALIBRATION_DATES}.pkl", "wb") as f:
                 pickle.dump({"sim_data": sim_data, "theta": theta}, f)
         else:
-            with open(f"data_npz/sbc_data_{num_sbc_saples}_{num_posterior_samples}.pkl", "rb") as f:
+            with open(f"data_npz/sbc_data_{num_sbc_saples}_{num_posterior_samples}_{NUM_CALIBRATION_DATES}.pkl", "rb") as f:
                 data = pickle.load(f)
                 sim_data = data["sim_data"]
                 theta = data["theta"]

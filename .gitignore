@@ -3,6 +3,7 @@ video
 sbi-logs
 papers
 data
+data_npz
 pngs
 *.docx
 *.aux
@@ -14,4 +15,7 @@ pngs
 *.pkl
 *.zip
 *.pdf
+Project.toml
+Manifest.toml
+calbrete_before_it.jl
 __pycache__
