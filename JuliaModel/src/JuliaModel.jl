@@ -66,7 +66,7 @@ function run_simulation(parameters, initial_conditions, T, keys)
 end
 
 function run_monte_carlo(parameters, initial_conditions, T, num_simulations, keys, calibration_date, country)
-    real_data = BeforeIT_Modded.ITALY_CALIBRATION.data
+    real_data = BeforeIT_Modded.load_calibration_data(country).data
 
     model = BeforeIT_Modded.Model(parameters, initial_conditions)
     model_vector = BeforeIT_Modded.ensemblerun!((deepcopy(model) for _ in 1:num_simulations), T, parallel=true)
@@ -96,7 +96,7 @@ end
 
 function get_real(keys, country)
     
-    cal = BeforeIT_Modded.ITALY_CALIBRATION
+    cal = BeforeIT_Modded.load_calibration_data(country)
     out = Dict()
     for key in keys
         name = key
@@ -110,7 +110,7 @@ function get_real(keys, country)
 end
 
 function calibrate(year, month, day, country) 
-    cal = BeforeIT_Modded.ITALY_CALIBRATION
+    cal = BeforeIT_Modded.load_calibration_data(country)
     calibration_date = DateTime(year, month, day)
     parameters, initial_conditions = BeforeIT_Modded.get_params_and_initial_conditions(cal, calibration_date; scale = 0.0001)
     return parameters, initial_conditions

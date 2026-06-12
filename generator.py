@@ -39,7 +39,7 @@ def run_monte_carlo(parameters, initial_conditions, T, num_simulations, keys):
 
 
 ### initial calibration
-initial_calibration = datetime(2013, 3, 31)
+initial_calibration = datetime(2010, 3, 31)
 
 n = 3  # number of years to simulate -> 3 years
 T_hist = 4 * n - 1  # quaters
@@ -78,13 +78,12 @@ final_params, final_initial = jl.calibrate(
 ### gen historical date for NPE
 
 # parameters_to_calibrate = ["zeta_b", "omega", "lambda_p"]
-parameters_to_calibrate = ["theta", "zeta_b","omega", "lambda_p"]
+parameters_to_calibrate = ["omega", "lambda_p", "pi_bar"]
 
 priors_bounds = [
-    (0, 1),  # theta
-    (0.03, 0.5),  # zeta
     (0, 1),  # omega
     (0.001, 5),  # lambda_p
+    (0.5, 1),  # pi_bar
 ]
 
 
@@ -146,7 +145,7 @@ def run_prior_check(samples, real, cal_date, keys):
         plt.title(f"Prior check for key: {keys[i]}")
         plt.xlabel(f"Time, from {cal_date.strftime('%Y-%m-%d')}")
         plt.ylabel(keys[i])
-    plt.savefig(f"pngs/prior_check_{cal_date.strftime('%Y-%m-%d')}.png")
+    plt.savefig(f"pngs/{country}_prior_check_{cal_date.strftime('%Y-%m-%d')}.png")
     plt.legend(loc="upper left")
     plt.close()
     
@@ -170,9 +169,6 @@ def gen_batch (calibration_date, num_calibrations, T, priors, params_to_calibrat
         n_samples, num_calibrations, n_runs, len(keys), T + 1
     )
 
-    if load:
-        pass
-
     if isinstance(priors, BoxUniform):
         theta_draws = priors.sample((n_samples, ))
     else:
@@ -187,7 +183,7 @@ def gen_batch (calibration_date, num_calibrations, T, priors, params_to_calibrat
 
     return theta_draws, batch
 
-num_calibrations = 5
+num_calibrations = 10
 n_runs = 5
 keys = avaible_keys
 samples = np.zeros((n_histories, num_calibrations, n_runs, len(keys), T_hist + 1))
@@ -214,7 +210,7 @@ if "prior_check" in argv:
 print(df.head(n = 20))
 ### save
 np.savez(
-    f"data_npz/prior_samples_n{n_histories}_{','.join(parameters_to_calibrate)}_bounds{','.join([str(b) for b in priors_bounds.numpy()])}.npz",
+    f"data_npz/{country}_prior_samples_n{n_histories}_{','.join(parameters_to_calibrate)}_bounds{','.join([str(b) for b in priors_bounds.numpy()])}.npz",
     sim_out=samples,
     theta_draw = prior_draws,
     bounds = priors_bounds.numpy(),
