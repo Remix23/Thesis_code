@@ -39,7 +39,7 @@ def run_monte_carlo(parameters, initial_conditions, T, num_simulations, keys):
 
 
 ### initial calibration
-initial_calibration = datetime(2010, 3, 31)
+initial_calibration = datetime(2013, 3, 31)
 
 n = 3  # number of years to simulate -> 3 years
 T_hist = 4 * n - 1  # quaters
@@ -183,7 +183,7 @@ def gen_batch (calibration_date, num_calibrations, T, priors, params_to_calibrat
 
     return theta_draws, batch
 
-num_calibrations = 10
+num_calibrations = 5
 n_runs = 5
 keys = avaible_keys
 samples = np.zeros((n_histories, num_calibrations, n_runs, len(keys), T_hist + 1))
@@ -214,6 +214,9 @@ np.savez(
     sim_out=samples,
     theta_draw = prior_draws,
     bounds = priors_bounds.numpy(),
-    parameters_to_calibrate = parameters_to_calibrate
+    parameters_to_calibrate = parameters_to_calibrate,
+    num_calibrations = num_calibrations,
+    n_runs = n_runs,
+    starting_calibration_date = initial_calibration.strftime('%Y-%m-%d'),
 )
 

@@ -130,6 +130,7 @@ class SeqEmbedding(nn.Module):
 			input_size=n_features,
 			hidden_size = hidden_size,
 			num_layers=2,
+			batch_first=True,
 		)
 
 		self.head = nn.Linear(
@@ -141,58 +142,62 @@ class SeqEmbedding(nn.Module):
 		# x is (CALIBRATION_DATES, N_RUNS, n_features, T_hist + 1)
 		### take average of the runs
 		x = x.reshape(-1, self.n_features, self.T) # (batch_size, T, n_features)
-		x = x.permute(2, 0, 1) # (batch_size, n_features, T)
+		x = x.permute(0, 2, 1) # (batch_size, n_features, T)
 		_, h = self.gru(x)
 		return self.head(h[-1])
 	
-class Batched(nn.Module):
-	def __init__ (self, calibration_dates, n_runs, T, n_features, hidden_size, out_dim):
+class Hierarchical(nn.Module):
+	def __init__ (self, calibration_dates, T, n_features, hidden_sizes, out_dim):
 		super().__init__()
-		self.T, self.n_features, self.hidden_size, self.out_dim = T, n_features, hidden_size, out_dim
+		self.T, self.n_features, self.hidden_sizes, self.out_dim = T, n_features, hidden_sizes, out_dim
 		self.n_calibration_dates = calibration_dates
-		self.n_runs = n_runs
 
-		self.gru = nn.GRU(
+		self.gru1 = nn.GRU(
 			input_size=n_features,
-			hidden_size = hidden_size,
+			hidden_size = hidden_sizes[0],
 			num_layers=2,
+			batch_first=True,
+		)
+
+		self.gru2 = nn.GRU(
+			input_size=hidden_sizes[0],
+			hidden_size = hidden_sizes[1],
+			num_layers=2,
+			batch_first=True,
 		)
 
 		self.head = nn.Linear(
-			hidden_size * 2, 
+			hidden_sizes[1], 
 			out_dim,
 		)
 
 	def forward(self, x):
-		# x is (CALIBRATION_DATES, N_RUNS, n_features, T_hist + 1)
+		# x is (CALIBRATION_DATES, n_features, T_hist + 1)
 		### take average of the runs
-		x = x.reshape(-1, self.n_calibration_dates, self.n_runs, self.n_features, self.T) # (batch_size, T, n_features)
+		x = x.reshape(-1, self.n_calibration_dates, self.n_features, self.T) # (batch_size, T, n_features)
 	
 		### compact to (batch_size, T, n_features)
 		batch_size = x.shape[0]
-		x = x.reshape(batch_size * self.n_calibration_dates * self.n_runs, self.n_features, self.T) # (batch_size * n_calibration_dates * n_runs, n_features, T)
+		x = x.reshape(batch_size * self.n_calibration_dates, self.n_features, self.T) # (batch_size * n_calibration_dates, n_features, T)
 
 		### for gru
-		x = x.permute(2, 0, 1) # (batch_size * n_calibration_dates * n_runs, T, n_features)
+		x = x.permute(0, 2, 1) # (batch_size * n_calibration_dates, T, n_features)
 		
-		_, h = self.gru(x) ### h: (1, batch_size * n_calibration_dates * n_runs, hidden_size)
+		_, h = self.gru1(x) ### h: (1, batch_size * n_calibration_dates, hidden_size)
 		h = h[-1, : , :]
-		h = h.reshape(batch_size, self.n_calibration_dates, self.n_runs, self.hidden_size) # (batch_size, n_calibration_dates, n_runs, hidden_size)
+		h = h.reshape(batch_size, self.n_calibration_dates, self.hidden_sizes[0]) # (batch_size, n_calibration_dates, hidden_size)
 		
-		mean = h.mean(dim=2) # (batch_size, n_calibration_dates, hidden_size)
-		std = h.std(dim=2) # (batch_size, n_calibration_dates, hidden_size)
+		_, h_over_calibration =self.gru2(h) ### h_over_calibration: (1, batch_size, hidden_size)
 
-		h_period = cat((mean, std), dim=-1) # (batch_size, n_calibration_dates, hidden_size * 2)
-		h_period = h_period.mean(dim=1) # (batch_size, hidden_size * 2
-
-		return self.head(h_period)
+		h_out = h_over_calibration[-1, :, :]
+		
+		return self.head(h_out)
 	
 if __name__ == "__main__":
 	cnn = CNN_GDP(
 		stat_keys=["mean", "std"], 
 	)
 	print(cnn.forward(randn(1, 3, 10)))
-	print(cnn)
 
 	seq = SeqEmbedding(
 		T = 10, 
@@ -203,14 +208,18 @@ if __name__ == "__main__":
 
 	print(seq.forward(randn(1, 3, 10).flatten()))
 
-	batched = Batched(
+	hierarchical = Hierarchical(
 		calibration_dates = 5,
-		n_runs = 10,
-		T = 10, 
+		T = 10,
 		n_features = 3,
-		hidden_size = 64,
+		hidden_sizes = [64, 32],
 		out_dim = 16,
 	)
 
-	print(batched.forward(randn(1, 5, 10, 3, 10).flatten()))
+	print(hierarchical.forward(randn(1, 5, 3, 10).flatten()))
+
+	print("Num of trainable parameters:")
+	print(sum(p.numel() for p in cnn.parameters() if p.requires_grad))
+	print(sum(p.numel() for p in seq.parameters() if p.requires_grad))
+	print(sum(p.numel() for p in hierarchical.parameters() if p.requires_grad))
 	
