@@ -8,7 +8,7 @@ environ["JULIA_NUM_THREADS"] = str(NUM_THREADS)
 environ["PYTHON_JULIACALL_HANDLE_SIGNALS"] = "yes"
 
 from juliacall import Main as jl
-jl.seval("using JuliaModel: run_simulation, get_real, calibrate, run_monte_carlo")
+jl.seval("using JuliaModel: run_simulation, get_real, calibrate, run_monte_carlo, CalibrationData")
 print(f"Using JuliaModel with {jl.seval('Threads.nthreads()')} threads.")
 
 from sbi.utils import BoxUniform
@@ -519,7 +519,9 @@ def sweep_posterior (posterior, bounds, priors, parameters_to_calibrate, t_train
 
     fig, axes = plt.subplots(1, len(theta_base), figsize=(18, 5))
 
-    for i, dim in enumerate(theta_base):
+    out = torch.zeros((len(theta_base), points_per_dim, 4)) ### (n_parameters, n_points, 4) for a plot for a given parameter
+
+    for i, middle in enumerate(theta_base):
         param_name = parameters_to_calibrate[i]
         low, high = bounds[i]
         sweep_values = torch.linspace(low, high, steps=points_per_dim + 2)[1:-1] # exclude the bounds
@@ -584,12 +586,13 @@ def sweep_posterior (posterior, bounds, priors, parameters_to_calibrate, t_train
     plt.savefig(f"pngs/sweep_posterior_medians_nn_{nn_versions[0]}_from_prior_{num_sbc_saples}_from_posterior_{posterior_draws}_{timestamp}.png")
     plt.show()
 
-def forecast (posterior, final_params, final_initial):
+def forecast (posterior, final_params, final_initial, t_forecast, keys, calibration_date, country):
 
     posterior_samples = posterior.sample((1000, ))
     npe_forecast_params = posterior_samples.mean(dim= 0)
     npe_forecast_params = rep_parameters(final_params, parameters_to_calibrate, npe_forecast_params)
-    npe_forecast = run_monte_carlo(npe_forecast_params, final_initial, T_forecast, num_simulations=100, calibration_date=final_calibration, keys=keys, country=country)[1:]
+    npe_forecast = jl.run_monte_carlo(npe_forecast_params, final_initial, t_forecast, 100, keys, calibration_date, country)
+
     return npe_forecast
 
 def plot_forecasts (forecasts : dict[str, np.ndarray], realized_future, parameters_to_calibrate, bounds):
@@ -967,13 +970,10 @@ if __name__ == "__main__":
             plt.close()
         
     if "sweep" in argv:
-        ### baseline
-
-
-        post = nn_posteriors[0]
-        _, transform = nn_transforms[0]
-
         
+        for p, transform, name in zip(nn_posteriors, nn_transforms, nn_versions):
+            print(f"Running sweep for NN embedding: {name}")
+            sweep_posterior(p, bounds, priors, parameters_to_calibrate, T_hist)
 
 
     if "forecast" in argv:

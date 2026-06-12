@@ -9,7 +9,7 @@ environ["PYTHON_JULIACALL_HANDLE_SIGNALS"] = "yes"
 
 from juliacall import Main as jl
 
-jl.seval("using JuliaModel: run_simulation, get_real, calibrate, run_monte_carlo")
+jl.seval("using JuliaModel: run_simulation, get_real, calibrate, run_monte_carlo, CalibrationData")
 print(f"Using JuliaModel with {jl.seval('Threads.nthreads()')} threads.")
 
 import matplotlib.pyplot as plt

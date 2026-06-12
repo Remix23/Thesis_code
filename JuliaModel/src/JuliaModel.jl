@@ -6,6 +6,8 @@ import BeforeIT_Modded: toannual, toannual_mean
 
 using Dates
 
+const CalibrationData = BeforeIT_Modded.CalibrationData
+
 function toannual(ftsa::AbstractMatrix)
     m = 4
     fts = zeros(size(ftsa, 1), cld(size(ftsa, 2), m))
