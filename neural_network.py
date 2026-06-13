@@ -20,7 +20,7 @@ STATISTICS = {
     "auto_corr_2" : lambda sim_out: np.corrcoef(sim_out[:-2], sim_out[2:])[0, 1],
     "auto_corr_3" : lambda sim_out: np.corrcoef(sim_out[:-3], sim_out[3:])[0, 1],
     "ar1_coeff": lambda sim_out: findar_p(sim_out, 1)[1],
-    "ar2_coeff": lambda sim_out: findar_p(sim_out, 2)[2],
+    "ar2_coeff": lambda sim_out: findar_p(sim_out, 2)[1],
     "min": lambda sim_out: np.min(sim_out),
     "max": lambda sim_out: np.max(sim_out),
     "skewness": lambda sim_out: np.mean((sim_out - np.mean(sim_out))**3) / np.std(sim_out)**3,

@@ -193,7 +193,7 @@ STATISTICS = {
     "auto_corr_2" : lambda sim_out: np.corrcoef(sim_out[:-2], sim_out[2:])[0, 1],
     "auto_corr_3" : lambda sim_out: np.corrcoef(sim_out[:-3], sim_out[3:])[0, 1],
     "ar1_coeff": lambda sim_out: findar_p(sim_out, 1)[1],
-    "ar2_coeff": lambda sim_out: findar_p(sim_out, 2)[2],
+    "ar2_coeff": lambda sim_out: findar_p(sim_out, 2)[1],
     "min": lambda sim_out: np.min(sim_out),
     "max": lambda sim_out: np.max(sim_out),
     "skewness": lambda sim_out: np.mean((sim_out - np.mean(sim_out))**3) / np.std(sim_out)**3,
@@ -242,7 +242,7 @@ def compute_statistics (sim_out):
     yearly_corr = np.corrcoef(growth_rates[:-4], growth_rates[4:])[0, 1]
     ### AR(1) coefficient of real GDP
     ar1_coeff = findar_p(growth_rates, 1)[1]
-    ar2_coeff = findar_p(growth_rates, 2)[2]
+    ar2_coeff = findar_p(growth_rates, 2)[1]
 
     mini, maxi = np.min(growth_rates), np.max(growth_rates)
     
@@ -507,6 +507,63 @@ def ppc_trajectories (observed_trajectory, sim_out_trajectories, filename):
     plt.savefig(filename)
     plt.close()
 
+def load_sweep_data ():
+    sweep_folder = path.join(getcwd(), "data_npz", "sweep")
+    files = [f for f in listdir(sweep_folder) if f.endswith(".pkl")]
+    for i, file in enumerate(files):
+        print(f"{i + 1}. {file}")
+    file_index = int(input("Enter the number corresponding to the sweep data file you want to load: ")) - 1
+    file_path = path.join(sweep_folder, files[file_index])
+    with open(file_path, "rb") as f:
+        data = pickle.load(f)
+    print(f"Loaded sweep data from {file_path} with keys: {list(data.keys())}")
+    return (
+        data["sweep_data"],
+        data["sweep_theta_values"],
+        data["parameters_to_calibrate"],
+        data["priors_bounds"],
+        data["sim_per_point"],
+        data["points_per_dim"],
+        data["starting_calibration_date"]
+    )
+def gen_sweep_dataset (sim_per_point, points_per_dim,parameters_to_calibrate, priors_bounds, priors, country):
+    lowers, uppers = torch.tensor(priors_bounds, dtype=torch.float32).T
+    theta_base = torch.tensor((lowers + uppers) / 2, dtype=torch.float32)
+
+    assert len(theta_base) == len(parameters_to_calibrate), "Number of parameters to calibrate must match number of prior bounds."
+
+    out = torch.zeros((
+        len(theta_base), points_per_dim, sim_per_point, NUM_CALIBRATION_DATES, len(avaible_keys), T_hist + 1
+    ))
+
+    sweep_theta_values = torch.zeros((len(theta_base), points_per_dim))
+
+    for i in range(len(theta_base)):
+        low, high = priors_bounds[i]
+        sweep_values = torch.linspace(low, high, points_per_dim + 2)[1:-1]
+        sweep_theta_values[i, :] = sweep_values
+        for j, val in enumerate(sweep_values):
+            theta_sweep = theta_base.clone()
+            theta_sweep[i] = val
+
+            _, sweep_x = gen_batch(
+                calibration_date=initial_calibration,
+                num_calibrations=NUM_CALIBRATION_DATES,
+                T=T_hist,
+                priors = priors,
+                params_to_calibrate=parameters_to_calibrate,
+                n_samples=sim_per_point,
+                n_runs=1,
+                keys=avaible_keys,
+                country=country,
+                sample_theta = theta_sweep,
+            )
+            sweep_x = sweep_x.squeeze(2)
+            ### we are left with (sim_per_point, num_calibrations, len(keys), T_hist + 1)
+            out[i, j, :, :, :, :] = sweep_x
+
+    return out
+
 def sweep_posterior (posterior, bounds, priors, parameters_to_calibrate, t_train, x_transform, keys, country):
     lowers, uppers = torch.tensor(bounds, dtype=torch.float32).T
 
@@ -518,6 +575,20 @@ def sweep_posterior (posterior, bounds, priors, parameters_to_calibrate, t_train
 
     fig, axes = plt.subplots(1, len(theta_base), figsize=(18, 5))
 
+    sweep_data = torch.zeros(
+        len(theta_base), points_per_dim, sim_per_point, NUM_CALIBRATION_DATES, len(avaible_keys), t_train + 1
+    )
+
+    if "load_sweep" in argv:
+        sweep_data, sweep_theta_values, parameters_to_calibrate, priors_bounds, sim_per_point, points_per_dim, starting_calibration_date = load_sweep_data()
+        theta_base = torch.tensor(sweep_theta_values, dtype=torch.float32)
+        bounds = priors_bounds
+        print(f"Loaded sweep data with {len(sweep_data)} points for each parameter.")
+    else:
+        sweep_data = gen_sweep_dataset(
+            sim_per_point, points_per_dim, parameters_to_calibrate, bounds, priors, country
+        )
+
     for i, middle in enumerate(theta_base):
         param_name = parameters_to_calibrate[i]
         low, high = bounds[i]
@@ -526,21 +597,10 @@ def sweep_posterior (posterior, bounds, priors, parameters_to_calibrate, t_train
         for j, val in enumerate(sweep_values):
             theta_sweep = theta_base.clone()
             theta_sweep[i] = val
-            ### TODO: Precomput the validation sweep set
-            _, sweep_x = gen_batch(
-                    calibration_date=FIRST_CALIBRATION_DATE,
-                    num_calibrations=NUM_CALIBRATION_DATES,
-                    T=t_train,
-                    priors=priors,
-                    params_to_calibrate=parameters_to_calibrate,
-                    n_samples=sim_per_point,
-                    n_runs=1,
-                    keys=keys,
-                    country=country,
-                    sample_theta=theta_sweep,
-                    force_gen=True
-                ) 
-            sweep_x = sweep_x.squeeze(2)
+            
+            ### already removed MC dimensions along with generatio
+            sweep_x = sweep_data[i, j, :, :, :, :]
+
             sweep_x = x_transform(sweep_x) 
             sweep_x = sweep_x.flatten(start_dim=1)
 
@@ -762,7 +822,7 @@ if __name__ == "__main__":
         to_seq_x = lambda x:x.reshape(x.shape[0] * x.shape[1], x.shape[2], x.shape[3])[..., 1:]
         to_seq_theta = lambda x: x.repeat_interleave(NUM_CALIBRATION_DATES, dim=0)
 
-        batched_multivariate = Hierarchical(
+        hierarchical = Hierarchical(
             calibration_dates=NUM_CALIBRATION_DATES,
             n_features=len(keys),
             T=T_hist,
@@ -777,14 +837,14 @@ if __name__ == "__main__":
 
         nn_cnn_mixture = CNN_GDP(stat_keys=s_nn, in_channels=3, conv_dims=[16, 32], summary_dims=16, out_dims=32, pool_kernel_size=1)
 
-        nns += [seq_multivariate]
-        x_transforms = [to_seq_x]
-        theta_transforms = [to_seq_theta]
+        nns += [seq_multivariate, hierarchical] # nn_raw, nn_diff, nn_3channels, nn_rnn, nn_cnn_mixture,
+        x_transforms = [to_seq_x, to_hierarchical_x]
+        theta_transforms = [to_seq_theta, to_hierarchical_theta]
         nn_transforms = list(zip(theta_transforms, x_transforms))
         # nn_transforms += [lambda x: reduction(x)[:, 1:], lambda x: to_growth_rate(reduction(x)), lambda x: x[..., 1:],  to_seq_multivariate]
-        nn_versions += ["seq_multivariate"] # "cnn_log", "cnn_growth_rate", "cnn_level",
-        nn_keys += [keys]
-        nn_cal_nums += [NUM_CALIBRATION_DATES]
+        nn_versions += ["seq_multivariate", "hierarchical"] # "cnn_log", "cnn_growth_rate", "cnn_level",
+        nn_keys += [keys, keys]
+        nn_cal_nums += [NUM_CALIBRATION_DATES, NUM_CALIBRATION_DATES]
 
         assert len(nns) == len(nn_versions) == len(nn_transforms) == len(nn_keys), "Length of nns, nn_versions, nn_transforms and nn_keys must be the same"
 

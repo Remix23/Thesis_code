@@ -1,6 +1,8 @@
 from datetime import date, datetime
 from os import environ, getcwd, listdir, path
 from sys import argv
+from typing import Tuple
+import pickle
 
 NUM_THREADS = 10
 
@@ -40,6 +42,7 @@ def run_monte_carlo(parameters, initial_conditions, T, num_simulations, keys):
 
 ### initial calibration
 initial_calibration = datetime(2013, 3, 31)
+num_calibrations = 5
 
 n = 3  # number of years to simulate -> 3 years
 T_hist = 4 * n - 1  # quaters
@@ -86,9 +89,7 @@ priors_bounds = [
     (0.5, 1),  # pi_bar
 ]
 
-def gen_sweep_dataset (calibration_date, T, parameters_to_calibrate, priors_bounds, country):
-    pass
-
+        
 
 assert len(parameters_to_calibrate) == len(priors_bounds), "Number of parameters to calibrate must match number of prior bounds."
 
@@ -152,7 +153,7 @@ def run_prior_check(samples, real, cal_date, keys):
     plt.close()
     
     
-def gen_sample (calibration_date, theta_draws, T, params_to_calibrate, n_runs, keys):
+def gen_sample (calibration_date, theta_draws, T, params_to_calibrate, n_runs, keys, country) -> torch.Tensor:
     params, initial_conditions = jl.calibrate(
         calibration_date.year, calibration_date.month, calibration_date.day, country
     )
@@ -165,27 +166,85 @@ def gen_sample (calibration_date, theta_draws, T, params_to_calibrate, n_runs, k
 
     return samples
 
-def gen_batch (calibration_date, num_calibrations, T, priors, params_to_calibrate, n_samples, n_runs, keys, load = False):
-
+def gen_batch (calibration_date, num_calibrations, T, priors, params_to_calibrate, n_samples, n_runs, keys, country, sample_theta=None) -> Tuple[torch.Tensor, torch.Tensor]:
     batch = torch.zeros(
         n_samples, num_calibrations, n_runs, len(keys), T + 1
     )
+    theta_draws = torch.zeros((n_samples, len(params_to_calibrate)))
 
-    if isinstance(priors, BoxUniform):
-        theta_draws = priors.sample((n_samples, ))
+    if sample_theta is not None:
+        theta_draws = sample_theta.repeat((n_samples, 1))
     else:
-        theta_draws = priors.sample((n_samples, ), show_progress_bars=False)
+        if isinstance(priors, BoxUniform):
+            theta_draws = priors.sample((n_samples, ))
+        else:
+            theta_draws = priors.sample((n_samples, ), show_progress_bars=False)
 
     for i in range(num_calibrations):
         cal_year = calibration_date.year + i
         cal_date = datetime(cal_year, calibration_date.month, calibration_date.day)
         print(f"Generating batch for calibration date: {cal_date.strftime('%Y-%m-%d')}")
-        samples = gen_sample(cal_date, theta_draws, T, params_to_calibrate, n_runs, keys)
+        samples = gen_sample(cal_date, theta_draws, T, params_to_calibrate, n_runs, keys, country)
         batch[:, i, :, :, :] = samples
 
     return theta_draws, batch
 
-num_calibrations = 5
+def gen_sweep_dataset (parameters_to_calibrate, priors_bounds, priors, country):
+    lowers, uppers = torch.tensor(priors_bounds, dtype=torch.float32).T
+    theta_base = torch.tensor((lowers + uppers) / 2, dtype=torch.float32)
+
+    assert len(theta_base) == len(parameters_to_calibrate), "Number of parameters to calibrate must match number of prior bounds."
+
+    sim_per_point = 20
+    points_per_dim = 9
+
+    out = torch.zeros((
+        len(theta_base), points_per_dim, sim_per_point, num_calibrations, len(avaible_keys), T_hist + 1
+    ))
+
+    sweep_theta_values = torch.zeros((len(theta_base), points_per_dim))
+
+    for i in range(len(theta_base)):
+        low, high = priors_bounds[i]
+        sweep_values = torch.linspace(low, high, points_per_dim + 2)[1:-1]
+        sweep_theta_values[i, :] = sweep_values
+        for j, val in enumerate(sweep_values):
+            theta_sweep = theta_base.clone()
+            theta_sweep[i] = val
+
+            _, sweep_x = gen_batch(
+                calibration_date=initial_calibration,
+                num_calibrations=num_calibrations,
+                T=T_hist,
+                priors = priors,
+                params_to_calibrate=parameters_to_calibrate,
+                n_samples=sim_per_point,
+                n_runs=1,
+                keys=avaible_keys,
+                country=country,
+                sample_theta = theta_sweep,
+            )
+            sweep_x = sweep_x.squeeze(2)
+            ### we are left with (sim_per_point, num_calibrations, len(keys), T_hist + 1)
+            out[i, j, :, :, :, :] = sweep_x
+    ### to file
+    file_name = f"{country}_sweep_{','.join(parameters_to_calibrate)}_bounds{','.join([str(b) for b in priors_bounds])}.pkl"
+    with open(path.join("data_npz", "sweep", file_name), "wb") as f:
+        pickle.dump(
+            {
+                "sweep_data": out.numpy(),
+                "sweep_theta_values": sweep_theta_values.numpy(),
+                "parameters_to_calibrate": parameters_to_calibrate,
+                "priors_bounds": priors_bounds.numpy(),
+                "num_calibrations": num_calibrations,
+                "sim_per_point": sim_per_point,
+                "points_per_dim": points_per_dim,
+                "starting_calibration_date": initial_calibration.strftime('%Y-%m-%d')
+            },
+            f
+        )
+    return sweep_theta_values, out
+
 n_runs = 5
 keys = avaible_keys
 samples = np.zeros((n_histories, num_calibrations, n_runs, len(keys), T_hist + 1))
@@ -200,7 +259,7 @@ df = pd.DataFrame({"date": np.array(quarterly_dates).flatten(), **{key: np.array
 
 df = df[df["date"] >= initial_calibration]
 
-prior_draws, samples = gen_batch(initial_calibration, num_calibrations, T_hist, priors, parameters_to_calibrate, n_histories, n_runs, keys)
+prior_draws, samples = gen_batch(initial_calibration, num_calibrations, T_hist, priors, parameters_to_calibrate, n_histories, n_runs, keys, country)
 
 if "prior_check" in argv:
     for i in range(num_calibrations):
