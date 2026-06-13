@@ -35,17 +35,16 @@ import pickle
 torch.manual_seed(0)
 np.random.seed(0)
 
+FIRST_CALIBRATION_DATE = datetime(2013, 3, 31)
 NUM_CALIBRATION_DATES = 10
 NUM_SIM_PER_ROUND = 1000
 
-NUM_RUNS_PER_DRAW = 10
+NUM_RUNS_PER_DRAW = 5
 
 ROUNDS = 1
 
 ### num of simulations per round: NUM_SIM_PER_ROUND * NUM_CALIBRATION_DATES * NUM_RUNS_PER_DRAW for batched
 ### num of simulations per round for non-batched: NUM_SIM_PER_ROUND * NUM_RUNS_PER_DRAW
-
-FIRST_CALIBRATION_DATE = datetime(2013, 3, 31)
 
 avaible_keys = [
     "real_gdp_quarterly",
@@ -100,12 +99,12 @@ def gen_sample (calibration_date, theta_draws, T, params_to_calibrate, n_runs, k
 
     return samples
 
-def gen_batch (calibration_date, num_calibrations, T, priors, params_to_calibrate, n_samples, n_runs, keys, country, sample_theta=None) -> Tuple[torch.Tensor, torch.Tensor]:
+def gen_batch (calibration_date, num_calibrations, T, priors, params_to_calibrate, n_samples, n_runs, keys, country, sample_theta=None, force_gen = False) -> Tuple[torch.Tensor, torch.Tensor]:
     batch = torch.zeros(
         n_samples, num_calibrations, n_runs, len(keys), T + 1
     )
 
-    if "load" in argv:
+    if "load" in argv and not force_gen:
         theta_draws = torch.tensor(loaded_theta_draws, dtype=torch.float32)
         batch = torch.tensor(loaded_sim_out, dtype=torch.float32)
         print(f"Loaded batch with shape {batch.shape} and theta_draws with shape {theta_draws.shape} from previous run.")
@@ -284,7 +283,7 @@ def select_country():
 
 
 def load_data():
-    data_folder = path.join(getcwd(), "data_npz")
+    data_folder = path.join(getcwd(), "data_npz", "training")
     all_npe = listdir(data_folder) + listdir(getcwd())
 
     files = [f for f in all_npe if f.endswith(".npz")]
@@ -316,10 +315,10 @@ def load_data():
     loaded_sim_out = data["sim_out"]
 
     if "n_runs" in data.files:
-        global NUM_RUNS_PER_DRAW, NUM_CALIBRATION_DATES, initial_calibration
-        NUM_RUNS_PER_DRAW = data["n_runs"]
-        NUM_CALIBRATION_DATES = data["num_calibrations"]
-        initial_calibration = datetime.strptime(data["starting_calibration_date"], '%Y-%m-%d')
+        global NUM_RUNS_PER_DRAW, NUM_CALIBRATION_DATES, FIRST_CALIBRATION_DATE
+        NUM_RUNS_PER_DRAW = data["n_runs"].item()
+        NUM_CALIBRATION_DATES = data["num_calibrations"].item()
+        FIRST_CALIBRATION_DATE = datetime.strptime(data["starting_calibration_date"].item(), '%Y-%m-%d')
 
     return data["parameters_to_calibrate"], data["bounds"]
 
@@ -508,7 +507,7 @@ def ppc_trajectories (observed_trajectory, sim_out_trajectories, filename):
     plt.savefig(filename)
     plt.close()
 
-def sweep_posterior (posterior, bounds, priors, parameters_to_calibrate, t_train):
+def sweep_posterior (posterior, bounds, priors, parameters_to_calibrate, t_train, x_transform, keys, country):
     lowers, uppers = torch.tensor(bounds, dtype=torch.float32).T
 
     theta_base = torch.tensor((lowers + uppers) / 2, dtype = torch.float32)
@@ -519,8 +518,6 @@ def sweep_posterior (posterior, bounds, priors, parameters_to_calibrate, t_train
 
     fig, axes = plt.subplots(1, len(theta_base), figsize=(18, 5))
 
-    out = torch.zeros((len(theta_base), points_per_dim, 4)) ### (n_parameters, n_points, 4) for a plot for a given parameter
-
     for i, middle in enumerate(theta_base):
         param_name = parameters_to_calibrate[i]
         low, high = bounds[i]
@@ -529,21 +526,25 @@ def sweep_posterior (posterior, bounds, priors, parameters_to_calibrate, t_train
         for j, val in enumerate(sweep_values):
             theta_sweep = theta_base.clone()
             theta_sweep[i] = val
+            ### TODO: Precomput the validation sweep set
             _, sweep_x = gen_batch(
                     calibration_date=FIRST_CALIBRATION_DATE,
                     num_calibrations=NUM_CALIBRATION_DATES,
-                    t_train=t_train,
+                    T=t_train,
                     priors=priors,
-                    parameters_to_calibrate=parameters_to_calibrate,
+                    params_to_calibrate=parameters_to_calibrate,
                     n_samples=sim_per_point,
                     n_runs=1,
                     keys=keys,
                     country=country,
-                    sample_theta=theta_sweep
+                    sample_theta=theta_sweep,
+                    force_gen=True
                 ) 
             sweep_x = sweep_x.squeeze(2)
-            sweep_x = transform(sweep_x) 
+            sweep_x = x_transform(sweep_x) 
             sweep_x = sweep_x.flatten(start_dim=1)
+
+            sweep_x = sweep_x.to(posterior.device)
             post_samples = posterior.sample_batched((posterior_draws, ), x = sweep_x, show_progress_bars=False)
             ### (post_draws, sim_per_point, n_parameters)
 
@@ -552,8 +553,9 @@ def sweep_posterior (posterior, bounds, priors, parameters_to_calibrate, t_train
             ### Coverage:
             q1 = torch.quantile(post_samples, 0.05, dim=0)
             q3 = torch.quantile(post_samples, 0.95, dim=0)
-            coverage = torch.mean((theta_sweep[i] >= q1) & (theta_sweep[i] <= q3))
-            print(f"Sweep for parameter {param_name} at value {val:.4f}: 90% credible interval coverage: {coverage:.2%}")
+            coverage = torch.mean(((val >= q1) & (val <= q3)).float()).item()
+            # print(f"Sweep for parameter {param_name} at value {val:.4f}: 90% credible interval coverage: {coverage:.2%}")
+            print(f"Sweep for parameter {param_name} at value {val:.4f}: 90% credible interval coverage: {coverage:.2%} (should be close to 90%)")
 
             ### compute sweeping, mean medians, for sim_per_point
             ### only for considered parameters dimension
@@ -564,7 +566,7 @@ def sweep_posterior (posterior, bounds, priors, parameters_to_calibrate, t_train
             points_out[j, 1] = median_mean
 
             ### uncertainty interval
-            lower, upper = torch.quantile(medians, torch.tensor([0.05, 0.95]))
+            lower, upper = torch.quantile(medians, torch.tensor([0.05, 0.95], device=medians.device))
             points_out[j, 2] = lower
             points_out[j, 3] = upper
 
@@ -583,8 +585,8 @@ def sweep_posterior (posterior, bounds, priors, parameters_to_calibrate, t_train
         axes[i].legend()
 
     plt.suptitle(f"Sweep of posterior medians for each parameter with {posterior_draws} posterior samples and {sim_per_point} simulations per point")
-    plt.savefig(f"pngs/sweep_posterior_medians_nn_{nn_versions[0]}_from_prior_{num_sbc_saples}_from_posterior_{posterior_draws}_{timestamp}.png")
-    plt.show()
+    plt.savefig(f"pngs/sweep_posterior_medians_nn_{nn_versions[0]}_from_posterior_{posterior_draws}_{timestamp}.png")
+    plt.close()
 
 def forecast (posterior, final_params, final_initial, t_forecast, keys, calibration_date, country):
 
@@ -898,50 +900,68 @@ if __name__ == "__main__":
 
 
     ### validation batches:
-    num_sbc_saples = 1000
+    num_prior_samples = 100
     num_posterior_samples = 1000
-    print(f"Running validation with {num_sbc_saples} samples and {num_posterior_samples} posterior samples for each...")
+    print(f"Running validation with {num_prior_samples} prior samples and {num_posterior_samples} posterior samples for each...")
 
-    if not path.exists(f"data_npz/sbc_data_{num_sbc_saples}_{num_posterior_samples}_{NUM_CALIBRATION_DATES}.pkl"):
-        sim_data, theta = gen_batch(
-            FIRST_CALIBRATION_DATE, 
-            NUM_CALIBRATION_DATES, 
-            T_hist,
-            priors, 
-            parameters_to_calibrate, 
-            num_sbc_saples, 
-                n_runs=NUM_RUNS_PER_DRAW, 
-                keys=keys,
-                country=country
-        )   
-        with open(f"data_npz/sbc_data_{num_sbc_saples}_{num_posterior_samples}_{NUM_CALIBRATION_DATES}.pkl", "wb") as f:
-            pickle.dump({"sim_data": sim_data, "theta": theta}, f)
+    if not "load_validation" in argv:
+        theta, sim_data = gen_batch(
+            calibration_date=FIRST_CALIBRATION_DATE,
+            num_calibrations=NUM_CALIBRATION_DATES,
+            T=T_hist,
+            priors=priors,
+            params_to_calibrate=parameters_to_calibrate,
+            n_samples=num_prior_samples,
+            n_runs=1,
+            keys=keys,
+            country=country, 
+            force_gen=True
+        )
+        with open(f"data_npz/validation/validation_{country}_prior_{num_prior_samples}_posterior_{num_posterior_samples}_c{NUM_CALIBRATION_DATES}_{timestamp}.pkl", "wb") as f:
+            pickle.dump({"theta": theta, "sim_data": sim_data}, f)
+
     else:
-        with open(f"data_npz/sbc_data_{num_sbc_saples}_{num_posterior_samples}_{NUM_CALIBRATION_DATES}.pkl", "rb") as f:
-                data = pickle.load(f)
-                sim_data = data["sim_data"]
-                theta = data["theta"]
+        val_dir = "data_npz/validation"
+        val_files = [f for f in listdir(val_dir) if f.endswith(".pkl")]
+        for i, file in enumerate(val_files):
+            print(f"{i + 1}. {file}")
+        file_index = int(input("Enter the number corresponding to the validation dataset you want to load: ")) - 1
+        
+        if file_index < 0 or file_index >= len(val_files):
+            print("Invalid index. Exiting.")
+            exit()
+        
+        val_path = path.join(val_dir, val_files[file_index])
+        with open(val_path, "rb") as f:
+            data = pickle.load(f)
+            theta = data["theta"]
+            sim_data = data["sim_data"]
 
     theta_draws, sim_out = unrol_mc_runs(theta, sim_data)
+    theta_draws = theta_draws.to("mps")
+    sim_out = sim_out.to("mps")
+    print(f"Validation batch loaded with {theta_draws.shape[0]} parameter draws and simulation output of shape {sim_out.shape}")
 
     if "sbc" in argv:
         for p, transform, name in zip(nn_posteriors, nn_transforms, nn_versions):
             print(f"Running SBC for NN embedding: {name}")
-            
+            theta_transforms, x_transform = transform
             ranks, dap_samples = run_sbc(
-                theta_draws, 
-                transform(sim_out).flatten(start_dim = 1),
+                theta_transforms(theta_draws),
+                x_transform(sim_out).flatten(start_dim = 1),
                 p,
                 num_posterior_samples=num_posterior_samples,
                 use_batched_sampling=False,
                 show_progress_bar=False,
             )
 
+            # print(dap_samples.shape)
+
             check_stats = check_sbc(
                 ranks,
-                prior_samples=theta_draws,
+                prior_samples=theta_transforms(theta_draws),
                 dap_samples=dap_samples,
-                num_posterior_samples=num_posterior_samples,
+                num_posterior_samples=num_prior_samples,
             )
 
             print(
@@ -952,12 +972,12 @@ if __name__ == "__main__":
 
             fig, axes = sbc_rank_plot(
                 ranks = ranks,
-                num_posterior_samples=num_posterior_samples,
+                num_posterior_samples=num_prior_samples,
                 plot_type="hist",
                 num_bins=None,
             )
             
-            plt.savefig(f"pngs/sbc_hist_nn_{name}_from_prior_{num_sbc_saples}_from_posterior_{num_posterior_samples}_{timestamp}.png")
+            plt.savefig(f"pngs/sbc_hist_nn_{name}_from_prior_{num_prior_samples}_from_posterior_{num_posterior_samples}_{timestamp}.png")
             plt.close()
 
             fig, axes = sbc_rank_plot(
@@ -966,14 +986,23 @@ if __name__ == "__main__":
                 plot_type="cdf",
             )
             
-            plt.savefig(f"pngs/sbc_cdf_nn_{name}_from_prior_{num_sbc_saples}_from_posterior_{num_posterior_samples}_{timestamp}.png")
+            plt.savefig(f"pngs/sbc_cdf_nn_{name}_from_prior_{num_prior_samples}_from_posterior_{num_posterior_samples}_{timestamp}.png")
             plt.close()
         
     if "sweep" in argv:
         
         for p, transform, name in zip(nn_posteriors, nn_transforms, nn_versions):
             print(f"Running sweep for NN embedding: {name}")
-            sweep_posterior(p, bounds, priors, parameters_to_calibrate, T_hist)
+            sweep_posterior(
+                posterior=p, 
+                bounds=bounds, 
+                priors=priors, 
+                parameters_to_calibrate=parameters_to_calibrate, 
+                t_train=T_hist,
+                x_transform=transform[1],
+                keys=keys,
+                country=country
+            )
 
 
     if "forecast" in argv:

@@ -86,6 +86,8 @@ priors_bounds = [
     (0.5, 1),  # pi_bar
 ]
 
+def gen_sweep_dataset (calibration_date, T, parameters_to_calibrate, priors_bounds, country):
+    pass
 
 
 assert len(parameters_to_calibrate) == len(priors_bounds), "Number of parameters to calibrate must match number of prior bounds."
@@ -208,9 +210,14 @@ if "prior_check" in argv:
         run_prior_check(samples[:, i, :, :, :].numpy(), real_data_ten, cal_date, keys)
 
 print(df.head(n = 20))
+
+nans = np.isnan(samples.numpy())
+is_row_nan = np.any(nans, axis=(2, 3, 4))  # check if any value in the row is NaN
+print(f"Number of NaNs in samples: {is_row_nan.sum()} out of {nans.size} total values")
+
 ### save
 np.savez(
-    f"data_npz/{country}_prior_samples_n{n_histories}_{','.join(parameters_to_calibrate)}_bounds{','.join([str(b) for b in priors_bounds.numpy()])}.npz",
+    f"data_npz/training/{country}_prior_samples_n{n_histories}_{','.join(parameters_to_calibrate)}_bounds{','.join([str(b) for b in priors_bounds.numpy()])}.npz",
     sim_out=samples,
     theta_draw = prior_draws,
     bounds = priors_bounds.numpy(),
