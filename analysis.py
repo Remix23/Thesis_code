@@ -35,9 +35,21 @@ import pickle
 torch.manual_seed(0)
 np.random.seed(0)
 
+if "--seed" in argv:
+    seed_index = argv.index("--seed") + 1
+    if seed_index < len(argv):
+        seed_value = int(argv[seed_index])
+        torch.manual_seed(seed_value)
+        np.random.seed(seed_value)
+        print(f"Set random seed to {seed_value} from command line argument.")
+    else:
+        print("Warning: --seed flag provided but no seed value found. Using default seed 0.")
+
 FIRST_CALIBRATION_DATE = datetime(2013, 3, 31)
-NUM_CALIBRATION_DATES = 10
+NUM_CALIBRATION_DATES = 5
 NUM_SIM_PER_ROUND = 1000
+
+COUNTRY = "IT"
 
 NUM_RUNS_PER_DRAW = 5
 
@@ -74,9 +86,9 @@ def run_sim(parameters, initial_conditions, T, keys = ["real_gdp"]):
     return np.array(data)
 
 def run_monte_carlo(parameters, initial_conditions, T, num_simulations, calibration_date , keys, country):
-    data = jl.run_monte_carlo(parameters, initial_conditions, T, num_simulations, calibration_date, keys, country)
+    data = jl.run_monte_carlo(parameters, initial_conditions, T, num_simulations, keys, calibration_date, country)
     data = np.mean(data, axis=0) # average across simulations
-    return np.array(data).flatten()
+    return data
 
 def findar_p (times_series, p):
     target = times_series[p:]
@@ -148,7 +160,7 @@ def unrol_mc_runs (theta, sim_out):
 def prepare_real (observed, keys, num_calibrations):
     ### we want observed to a dataframe with columns "date" and keys, and sorted by date, and with at least T_hist + 1 rows for each calibration date, and we want to return a generator of tensors of shape (len(keys), T_hist + 1) for each calibration date, where the tensor is the historical data for that calibration date.
     ### we output a x_o tensor for NN
-    ### we need (calibration dates, n_runs, n_feature, T_hist + 1)
+    ### we need (calibration dates, n_feature, T_hist + 1)
 
     out = torch.zeros((num_calibrations, len(keys), T_hist + 1))
 
@@ -280,7 +292,7 @@ def select_country():
 
     country = avaible_countries[selection]
     print(f"Selected country: {country}")
-
+    return country
 
 def load_data():
     data_folder = path.join(getcwd(), "data_npz", "training")
@@ -299,7 +311,8 @@ def load_data():
     if file_index < 0 or file_index >= len(files):
         return load_custom()
 
-    file_path = path.join(data_folder, files[file_index]) if files[file_index] in listdir(data_folder) else path.join(getcwd(), files[file_index])
+    file_name = files[file_index]
+    file_path = path.join(data_folder, files[file_index]) if file_name in listdir(data_folder) else path.join(getcwd(), file_name)
 
     data = np.load(file_path)
     required_keys = ["theta_draw", "sim_out", "parameters_to_calibrate", "bounds"]
@@ -310,22 +323,33 @@ def load_data():
     print("Parameters: ")
     for param, value in zip(data["parameters_to_calibrate"], data["bounds"]):
         print(f"{param}: {value}")
-    global loaded_theta_draws, loaded_sim_out
+    global loaded_theta_draws, loaded_sim_out, COUNTRY
     loaded_theta_draws = data["theta_draw"]
     loaded_sim_out = data["sim_out"]
+    COUNTRY = file_name.split("_")[0] if "_" in file_name else COUNTRY
 
     if "n_runs" in data.files:
-        global NUM_RUNS_PER_DRAW, NUM_CALIBRATION_DATES, FIRST_CALIBRATION_DATE
+        global NUM_RUNS_PER_DRAW, NUM_CALIBRATION_DATES, FIRST_CALIBRATION_DATE, NUM_SIM_PER_ROUND
         NUM_RUNS_PER_DRAW = data["n_runs"].item()
+        NUM_SIM_PER_ROUND = loaded_sim_out.shape(0)
         NUM_CALIBRATION_DATES = data["num_calibrations"].item()
         FIRST_CALIBRATION_DATE = datetime.strptime(data["starting_calibration_date"].item(), '%Y-%m-%d')
 
-    return data["parameters_to_calibrate"], data["bounds"]
+    print(f"[Settting global params]\nNUM_SIM_PER_ROUND to {NUM_SIM_PER_ROUND}\nNUM_RUNS_PER_DRAW to {NUM_RUNS_PER_DRAW}\nNUM_CALIBRATION_DATES to {NUM_CALIBRATION_DATES}\nFIRST_CALIBRATION_DATE to {FIRST_CALIBRATION_DATE.strftime('%Y-%m-%d')}\nCOUNTRY to {COUNTRY}")
+    return data["parameters_to_calibrate"].tolist(), data["bounds"]
 
 
 def save_posteriors (posteriors, verions, file_name):
     with open(file_name, "wb") as f:
-        pickle.dump({"posteriors": posteriors, "statistics_versions": verions}, f)
+        pickle.dump({
+            "posteriors": posteriors, 
+            "statistics_versions": verions,
+            "country": COUNTRY,
+            "num_calibration_dates": NUM_CALIBRATION_DATES,
+            "num_sim_per_round": NUM_SIM_PER_ROUND,
+            "rounds": ROUNDS,
+            "first_calibration_date": FIRST_CALIBRATION_DATE.strftime('%Y-%m-%d')
+            }, f)
     print(f"Saved posteriors to {file_name}")
 
 def remove_outliers(data: np.ndarray, m: float = 2.0, stat_names: list = None) -> np.ndarray:
@@ -351,8 +375,8 @@ def train_npe_nn_batched (priors, nn, nn_transform, params_to_calibrate, observe
         embedding_net=nn,
         z_score_x="structured"
     )
-    theta_transform, x_transform, = nn_transform
-    x_o = x_transform(prepare_real(observed, features_kyes, num_calibrations).unsqueeze(0)).flatten() # (1, n_features, T_hist + 1) -> (1, embedding_dim)
+    theta_transform, x_transform, x_o_transform = nn_transform
+    x_o = x_o_transform(prepare_real(observed, features_kyes, num_calibrations).unsqueeze(0)).flatten() # (1, n_features, T_hist + 1) -> (1, embedding_dim)
     inference = NPE_C(prior = priors, density_estimator=dense_estimator, device="mps")
     proposal = priors
     proposals = []
@@ -385,8 +409,8 @@ def train_nre_nn_batched (priors, nn, nn_transform, params_to_calibrate, observe
         embedding_net_x=nn,
         z_score_x="structured"
     )
-    theta_transform, x_transform = nn_transform
-    x_o = x_transform(prepare_real(observed, features_kyes, num_calibrations).unsqueeze(0)).flatten()
+    theta_transform, x_transform, x_o_transform = nn_transform
+    x_o = x_o_transform(prepare_real(observed, features_kyes, num_calibrations).unsqueeze(0)).flatten()
     inference = NRE(prior = priors, classifier=classifier)
     proposal = priors
     proposals = []
@@ -471,11 +495,12 @@ def train_nre_statistics_rounds (priors, stat_keys, full_params, initial_conditi
 
 def pplot_stat (posterior, params, filename):
 
-    posterior_samples = posterior.sample((4000,))
+    posterior_samples = posterior.sample((4000,)).cpu()
+
     _ = pairplot(
         posterior_samples,
-        points=np.array([params[param] for param in parameters_to_calibrate])[None, :],
-        labels=parameters_to_calibrate,
+        points=np.array([params[param] for param in parameters_to_calibrate]),
+        labels=list(parameters_to_calibrate),
         limits = torch.tensor(bounds, dtype=torch.float32),
         title = "Pairplot of the posterior samples with calibrated values"
     )
@@ -524,16 +549,17 @@ def load_sweep_data ():
         data["priors_bounds"],
         data["sim_per_point"],
         data["points_per_dim"],
-        data["starting_calibration_date"]
+        data["starting_calibration_date"],
+        data["sweep_theta_base"],
     )
-def gen_sweep_dataset (sim_per_point, points_per_dim,parameters_to_calibrate, priors_bounds, priors, country):
+def gen_sweep_dataset (sim_per_point, points_per_dim,parameters_to_calibrate, priors_bounds, priors, country, keys):
     lowers, uppers = torch.tensor(priors_bounds, dtype=torch.float32).T
     theta_base = torch.tensor((lowers + uppers) / 2, dtype=torch.float32)
 
     assert len(theta_base) == len(parameters_to_calibrate), "Number of parameters to calibrate must match number of prior bounds."
 
     out = torch.zeros((
-        len(theta_base), points_per_dim, sim_per_point, NUM_CALIBRATION_DATES, len(avaible_keys), T_hist + 1
+        len(theta_base), points_per_dim, sim_per_point, NUM_CALIBRATION_DATES, len(keys), T_hist + 1
     ))
 
     sweep_theta_values = torch.zeros((len(theta_base), points_per_dim))
@@ -554,7 +580,7 @@ def gen_sweep_dataset (sim_per_point, points_per_dim,parameters_to_calibrate, pr
                 params_to_calibrate=parameters_to_calibrate,
                 n_samples=sim_per_point,
                 n_runs=1,
-                keys=avaible_keys,
+                keys=keys,
                 country=country,
                 sample_theta = theta_sweep,
             )
@@ -562,44 +588,26 @@ def gen_sweep_dataset (sim_per_point, points_per_dim,parameters_to_calibrate, pr
             ### we are left with (sim_per_point, num_calibrations, len(keys), T_hist + 1)
             out[i, j, :, :, :, :] = sweep_x
 
-    return out
+    return sweep_theta_values, theta_base, out
 
-def sweep_posterior (posterior, bounds, priors, parameters_to_calibrate, t_train, x_transform, keys, country):
-    lowers, uppers = torch.tensor(bounds, dtype=torch.float32).T
+def sweep_posterior (posterior, bounds, sweep_data_x, sweep_data_theta, theta_base, parameters_to_calibrate, x_transform, sim_per_point, points_per_dim, posterior_draws, filename):
+    # lowers, uppers = torch.tensor(bounds, dtype=torch.float32).T
 
-    theta_base = torch.tensor((lowers + uppers) / 2, dtype = torch.float32)
-
-    sim_per_point = 20
-    points_per_dim = 9
-    posterior_draws = 4000
+    # theta_base = torch.tensor((lowers + uppers) / 2, dtype = torch.float32)
 
     fig, axes = plt.subplots(1, len(theta_base), figsize=(18, 5))
-
-    sweep_data = torch.zeros(
-        len(theta_base), points_per_dim, sim_per_point, NUM_CALIBRATION_DATES, len(avaible_keys), t_train + 1
-    )
-
-    if "load_sweep" in argv:
-        sweep_data, sweep_theta_values, parameters_to_calibrate, priors_bounds, sim_per_point, points_per_dim, starting_calibration_date = load_sweep_data()
-        theta_base = torch.tensor(sweep_theta_values, dtype=torch.float32)
-        bounds = priors_bounds
-        print(f"Loaded sweep data with {len(sweep_data)} points for each parameter.")
-    else:
-        sweep_data = gen_sweep_dataset(
-            sim_per_point, points_per_dim, parameters_to_calibrate, bounds, priors, country
-        )
 
     for i, middle in enumerate(theta_base):
         param_name = parameters_to_calibrate[i]
         low, high = bounds[i]
-        sweep_values = torch.linspace(low, high, steps=points_per_dim + 2)[1:-1] # exclude the bounds
+        sweep_values = sweep_data_theta[i, :]
         points_out = np.zeros((len(sweep_values), 4)) ### (theta_k, mean, lower, upper) for a plot for a given parameter
         for j, val in enumerate(sweep_values):
             theta_sweep = theta_base.clone()
             theta_sweep[i] = val
             
             ### already removed MC dimensions along with generatio
-            sweep_x = sweep_data[i, j, :, :, :, :]
+            sweep_x = sweep_data_x[i, j, :, :, :, :]
 
             sweep_x = x_transform(sweep_x) 
             sweep_x = sweep_x.flatten(start_dim=1)
@@ -650,30 +658,35 @@ def sweep_posterior (posterior, bounds, priors, parameters_to_calibrate, t_train
 
 def forecast (posterior, final_params, final_initial, t_forecast, keys, calibration_date, country):
 
-    posterior_samples = posterior.sample((1000, ))
+    posterior_samples = posterior.sample((1000, )).cpu()
     npe_forecast_params = posterior_samples.mean(dim= 0)
     npe_forecast_params = rep_parameters(final_params, parameters_to_calibrate, npe_forecast_params)
     npe_forecast = jl.run_monte_carlo(npe_forecast_params, final_initial, t_forecast, 100, keys, calibration_date, country)
+    out = np.asarray(npe_forecast)
 
-    return npe_forecast
+    return out.mean(axis=0)
 
-def plot_forecasts (forecasts : dict[str, np.ndarray], realized_future, parameters_to_calibrate, bounds):
-    plt.figure(figsize=(12, 8))
-    plt.plot(range(1, T_forecast + 1), realized_future["real_gdp"], label="Real GDP", color="black")
-    rolling_rsmfes = {}
-    for key, forecast in forecasts.items():
-        rmsfe = compute_rmsfes(forecast, realized_future["real_gdp"].values)
-        rolling_rsmfes[key] = rmsfe
-        print(f"RMSFE of {key} forecast: {rmsfe[-1]:.4f}")
-        plt.plot(range(1, T_forecast + 1), forecast, label=f"{key} Forecast")
-    plt.xticks(range(1, T_forecast + 1), realized_future["date"].dt.strftime("%Y-%m").values, rotation=45)
-    plt.title("Forecast comparison")
-    plt.xlabel("Time (quarters)")
-    plt.ylabel("Real GDP")
-    plt.legend()
+def plot_forecasts (forecasts : dict[str, np.ndarray], realized_future, parameters_to_calibrate, bounds, keys, country):
+    fig, axs = plt.subplots(2, len(keys) // 2 + len(keys) % 2, figsize=(18, 12))
+    for i, key in zip(range(len(keys)), keys):
+        ax = axs[np.unravel_index(i, axs.shape)]
+        ax.plot(range(1, T_forecast + 1), realized_future[key], label="Real " + key, color="black")
+        rolling_rsmfes = {}
+        print(f"\nForecast comparison for {key}:")
+        for version, forecast in forecasts.items():
+            rmsfe = compute_rmsfes(forecast[i, 1:], realized_future[key].values)
+            rolling_rsmfes[version] = rmsfe
+            print(f"RMSFE of {version} forecast: {rmsfe[-1]:.4f}")
+            ax.plot(range(1, T_forecast + 1), forecast[i, 1:], label=f"{version} ")
+        
+        ax.set_xticks(range(1, T_forecast + 1), realized_future["date"].dt.strftime("%Y-%m").values, rotation=45)
+        ax.set_title(f"Real {key}")
+        ax.set_xlabel("Time (quarters)")
+        ax.set_ylabel(f"{key} value")
+        ax.legend()
     plt.savefig(f"pngs/forecast_comparison_p{', '.join(parameters_to_calibrate)}_bounds{', '.join(str(b) for b in bounds)}.png")
     plt.show()
-    return rolling_rsmfes
+    return {}
 
 def compute_rmsfes (forecast, realized):
     rolling_differences = [(forecast[:i] - realized[:i])**2 for i in range(1, len(forecast) + 1)]
@@ -707,7 +720,7 @@ if __name__ == "__main__":
         "real_capitalformation_quarterly",
     ]
 
-    country = "IT"
+    country = COUNTRY
 
     data, quarterly_dates = jl.get_real(keys, country)
 
@@ -725,9 +738,9 @@ if __name__ == "__main__":
     final_params, final_initial = jl.calibrate(final_calibration.year, final_calibration.month, final_calibration.day, country)
 
     hist_params["omega"] = 0.5
-    hist_params["lambda_p"] = 2
-
     final_params["omega"] = 0.5
+
+    hist_params["lambda_p"] = 2
     final_params["lambda_p"] = 2
 
     hist_params["pi_bar"] = 1
@@ -821,6 +834,8 @@ if __name__ == "__main__":
         )
         to_seq_x = lambda x:x.reshape(x.shape[0] * x.shape[1], x.shape[2], x.shape[3])[..., 1:]
         to_seq_theta = lambda x: x.repeat_interleave(NUM_CALIBRATION_DATES, dim=0)
+        ### take the last calibration date: (n_samples, calibration data, n feature, T)
+        to_seq_x_o = lambda x: x[:, -1, :, 1:]
 
         hierarchical = Hierarchical(
             calibration_dates=NUM_CALIBRATION_DATES,
@@ -837,14 +852,15 @@ if __name__ == "__main__":
 
         nn_cnn_mixture = CNN_GDP(stat_keys=s_nn, in_channels=3, conv_dims=[16, 32], summary_dims=16, out_dims=32, pool_kernel_size=1)
 
-        nns += [seq_multivariate, hierarchical] # nn_raw, nn_diff, nn_3channels, nn_rnn, nn_cnn_mixture,
-        x_transforms = [to_seq_x, to_hierarchical_x]
-        theta_transforms = [to_seq_theta, to_hierarchical_theta]
-        nn_transforms = list(zip(theta_transforms, x_transforms))
+        nns += [seq_multivariate] # nn_raw, nn_diff, nn_3channels, nn_rnn, nn_cnn_mixture,
+        x_transforms = [to_seq_x]
+        theta_transforms = [to_seq_theta]
+        x_o_transforms = [to_seq_x_o]
+        nn_transforms = list(zip(theta_transforms, x_transforms, x_o_transforms))
         # nn_transforms += [lambda x: reduction(x)[:, 1:], lambda x: to_growth_rate(reduction(x)), lambda x: x[..., 1:],  to_seq_multivariate]
-        nn_versions += ["seq_multivariate", "hierarchical"] # "cnn_log", "cnn_growth_rate", "cnn_level",
-        nn_keys += [keys, keys]
-        nn_cal_nums += [NUM_CALIBRATION_DATES, NUM_CALIBRATION_DATES]
+        nn_versions += ["seq_multivariate"] # "cnn_log", "cnn_growth_rate", "cnn_level",
+        nn_keys += [keys]
+        nn_cal_nums += [NUM_CALIBRATION_DATES]
 
         assert len(nns) == len(nn_versions) == len(nn_transforms) == len(nn_keys), "Length of nns, nn_versions, nn_transforms and nn_keys must be the same"
 
@@ -882,6 +898,19 @@ if __name__ == "__main__":
             data = pickle.load(f)
             posteriors = data["posteriors"]
 
+            country = data["country"]
+            ROUNDS = data["rounds"]
+            NUM_SIM_PER_ROUND = data["num_sim_per_round"]
+            NUM_CALIBRATION_DATES = data["num_calibration_dates"]
+            FIRST_CALIBRATION_DATE = datetime.strptime(data["first_calibration_date"], "%Y-%m-%d")
+
+            print("[Setting global variables from loaded data]")
+            print(f"COUNTRY: {country}")
+            print(f"ROUNDS: {ROUNDS}")
+            print(f"NUM_SIM_PER_ROUND: {NUM_SIM_PER_ROUND}")
+            print(f"NUM_CALIBRATION_DATES: {NUM_CALIBRATION_DATES}")
+            print(f"FIRST_CALIBRATION_DATE: {FIRST_CALIBRATION_DATE.strftime('%Y-%m-%d')}")
+
         with open(ratio_path, "rb") as f:
             data = pickle.load(f)
             nres = data["posteriors"]
@@ -910,36 +939,36 @@ if __name__ == "__main__":
         ratios = {f"stat_{','.join(to_short_names(s))}": r for r, s in zip(statistics_nres, statistics_versions)}
         ratios.update({f"nn_{name}": r for r, name in zip(nn_nres, nn_versions)})
 
-        save_posteriors(posteriors, statistics_versions, f"trained_posteriors/posteriors_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_{timestamp}.pkl")
-        save_posteriors(ratios, statistics_versions, f"trained_posteriors/ratios_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_{timestamp}.pkl")
+        save_posteriors(posteriors, statistics_versions, f"trained_posteriors/posteriors_{COUNTRY}_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_{timestamp}.pkl")
+        save_posteriors(ratios, statistics_versions, f"trained_posteriors/ratios_{COUNTRY}_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_{timestamp}.pkl")
 
-    if "pp_history" in argv:
+    if "pp" in argv:
         ### pairplots for statistics-based NPE
         for p, s in zip(statistics_posteriors, statistics_versions):
-            pplot_stat(p, hist_params, filename = "npe_ " + ",".join(to_short_names(s)) + "_hist")
+            pplot_stat(p, hist_params, filename = "npe_ " + ",".join(to_short_names(s)))
 
         for r, s in zip(statistics_nres, statistics_versions):
-            pplot_stat(r, hist_params, filename = "nre_ " + ",".join(to_short_names(s)) + "_hist")
+            pplot_stat(r, hist_params, filename = "nre_ " + ",".join(to_short_names(s)))
 
         for p, transform, name in zip(nn_posteriors, nn_transforms, nn_versions):
-            pplot_stat(p, hist_params, filename = f"nn_npe_{name}_hist")
+            pplot_stat(p, hist_params, filename = f"nn_npe_{name}")
 
 
         for r, transform, name in zip(nn_nres, nn_transforms, nn_versions):
-            pplot_stat(r, hist_params, filename = f"nn_nre_{name}_hist")
+            pplot_stat(r, hist_params, filename = f"nn_nre_{name}")
 
     if "ppc" in argv:
         ### for statistics
         for p, s in zip(statistics_posteriors, statistics_versions):
             # x_o = compute_statistics_dict(observed_series["real"].values, s)
-            samples = p.sample((200,))
+            samples = p.sample((200,)).cpu()
             trajectories = np.array([run_monte_carlo(rep_parameters(hist_params, parameters_to_calibrate, sample.numpy()), hist_initial, T_hist, num_simulations=NUM_RUNS_PER_DRAW, calibration_date=initial_calibration, keys = keys, country=country) for sample in samples])
             file_name = f"pngs/ppc_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_p{len(parameters_to_calibrate)}_{','.join(to_short_names(s))}.png"
             ppc_trajectories(observed_series["real_gdp"].values[:T_hist+1], trajectories, file_name)
         
         ### for NN-based
         for p, transform, name in zip(nn_posteriors, nn_transforms, nn_versions):
-            samples = p.sample((200,))
+            samples = p.sample((200,)).cpu()
             trajectories = np.array([run_monte_carlo(rep_parameters(hist_params, parameters_to_calibrate, sample.numpy()), hist_initial, T_hist, num_simulations=NUM_RUNS_PER_DRAW, calibration_date=initial_calibration, keys = keys, country=country) for sample in samples])
             file_name = f"pngs/ppc_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_p{len(parameters_to_calibrate)}_nn{name}.png"
             ppc_trajectories(observed_series["real_gdp"].values[:T_hist+1], trajectories, file_name)
@@ -947,7 +976,6 @@ if __name__ == "__main__":
     if "ppc_stat" in argv:
         for p, s in zip(statistics_posteriors, statistics_versions):
             x_o = compute_statistics_dict(observed_series["real_gdp"].values[:T_hist], s)
-            # samples = p.sample((100,))
             stats_out = np.array([compute_statistics_dict(run_monte_carlo(rep_parameters(hist_params, parameters_to_calibrate, sample.numpy()), hist_initial, T_hist, num_simulations=NUM_RUNS_PER_DRAW, calibration_date=initial_calibration, keys = keys, country=country), s) for sample in samples])
             file_name = f"pngs/ppc_stat_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_p{len(parameters_to_calibrate)}_npe_{','.join(to_short_names(s))}.png"
             ppc_plot(x_o, stats_out, file_name)
@@ -958,9 +986,8 @@ if __name__ == "__main__":
             file_name = f"pngs/ppc_stat_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_p{len(parameters_to_calibrate)}_nre_{','.join(to_short_names(s))}.png"
             ppc_plot(x_o, stats_out, file_name)
 
-
     ### validation batches:
-    num_prior_samples = 100
+    num_prior_samples = 200
     num_posterior_samples = 1000
     print(f"Running validation with {num_prior_samples} prior samples and {num_posterior_samples} posterior samples for each...")
 
@@ -990,38 +1017,86 @@ if __name__ == "__main__":
         if file_index < 0 or file_index >= len(val_files):
             print("Invalid index. Exiting.")
             exit()
-        
+        file_name = val_files[file_index]
+        country_name = file_name.split("_")[1]
+
+        assert country_name == country, f"Loaded validation dataset for country {country_name} does not match the current country {country}. Please select a valid dataset."
+
         val_path = path.join(val_dir, val_files[file_index])
         with open(val_path, "rb") as f:
             data = pickle.load(f)
-            theta = data["theta"]
-            sim_data = data["sim_data"]
+        theta = data["theta"]
+        sim_data = data["sim_data"]
+        num_prior_samples = theta.shape[0]
 
     theta_draws, sim_out = unrol_mc_runs(theta, sim_data)
     theta_draws = theta_draws.to("mps")
     sim_out = sim_out.to("mps")
     print(f"Validation batch loaded with {theta_draws.shape[0]} parameter draws and simulation output of shape {sim_out.shape}")
 
+    if "sweep" in argv or "load_sweep" in argv:
+
+        sim_per_point = 20
+        points_per_dim = 9
+        posterior_draws = 4000
+
+        if "load_sweep" in argv:
+            sweep_data, sweep_theta_values, _parameters_to_calibrate, _bounds, sim_per_point, points_per_dim, _starting_calibration_date, theta_base = load_sweep_data()
+        else:
+            sweep_theta_values, theta_base, sweep_data = gen_sweep_dataset(sim_per_point, points_per_dim, parameters_to_calibrate=parameters_to_calibrate, priors_bounds=bounds, priors=priors, country=country, keys=keys)
+
+            with open(f"data_npz/sweep/sweep_{country}_prior_{num_prior_samples}_posterior_{num_posterior_samples}_c{NUM_CALIBRATION_DATES}_{timestamp}.pkl", "wb") as f:
+                pickle.dump({
+                    "sweep_data": sweep_data,
+                    "sweep_theta_values": sweep_theta_values,
+                    "parameters_to_calibrate": parameters_to_calibrate,
+                    "priors_bounds": bounds,
+                    "sim_per_point": sim_per_point,
+                    "points_per_dim": points_per_dim,
+                    "starting_calibration_date": FIRST_CALIBRATION_DATE,
+                    "sweep_theta_base" : theta_base
+                }, f)
+
+        for p, transform, name in zip(nn_posteriors, nn_transforms, nn_versions):
+            print(f"Running sweep for NN embedding: {name}")
+            sweep_posterior(
+                posterior=p, 
+                bounds=bounds, 
+                sweep_data_x=sweep_data,
+                sweep_data_theta=sweep_theta_values,
+                theta_base=theta_base,
+                parameters_to_calibrate=parameters_to_calibrate, 
+                x_transform=transform[1],
+                sim_per_point=sim_per_point,
+                points_per_dim=points_per_dim,
+                posterior_draws=posterior_draws,
+                filename=f"sweep_posterior_medians_nn_{name}_from_posterior_{posterior_draws}_{timestamp}.png"
+            )
+
+
     if "sbc" in argv:
         for p, transform, name in zip(nn_posteriors, nn_transforms, nn_versions):
             print(f"Running SBC for NN embedding: {name}")
-            theta_transforms, x_transform = transform
+            theta_transform, x_transform, x_o_transform = transform
+            prior_draws = theta_transform(theta_draws)
+
+            xs = x_transform(sim_out).flatten(start_dim=1)
             ranks, dap_samples = run_sbc(
-                theta_transforms(theta_draws),
-                x_transform(sim_out).flatten(start_dim = 1),
-                p,
+                thetas=prior_draws,
+                xs=xs,
+                posterior=p,
                 num_posterior_samples=num_posterior_samples,
                 use_batched_sampling=False,
-                show_progress_bar=False,
+                show_progress_bar=True,
             )
 
             # print(dap_samples.shape)
 
             check_stats = check_sbc(
-                ranks,
-                prior_samples=theta_transforms(theta_draws),
+                ranks = ranks,
+                prior_samples=prior_draws,
                 dap_samples=dap_samples,
-                num_posterior_samples=num_prior_samples,
+                num_posterior_samples=num_posterior_samples,
             )
 
             print(
@@ -1032,9 +1107,9 @@ if __name__ == "__main__":
 
             fig, axes = sbc_rank_plot(
                 ranks = ranks,
-                num_posterior_samples=num_prior_samples,
+                num_posterior_samples=num_posterior_samples,
                 plot_type="hist",
-                num_bins=None,
+                parameter_labels=parameters_to_calibrate
             )
             
             plt.savefig(f"pngs/sbc_hist_nn_{name}_from_prior_{num_prior_samples}_from_posterior_{num_posterior_samples}_{timestamp}.png")
@@ -1044,37 +1119,24 @@ if __name__ == "__main__":
                 ranks = ranks,
                 num_posterior_samples=num_posterior_samples,
                 plot_type="cdf",
+                parameter_labels=parameters_to_calibrate
             )
             
             plt.savefig(f"pngs/sbc_cdf_nn_{name}_from_prior_{num_prior_samples}_from_posterior_{num_posterior_samples}_{timestamp}.png")
             plt.close()
         
-    if "sweep" in argv:
-        
-        for p, transform, name in zip(nn_posteriors, nn_transforms, nn_versions):
-            print(f"Running sweep for NN embedding: {name}")
-            sweep_posterior(
-                posterior=p, 
-                bounds=bounds, 
-                priors=priors, 
-                parameters_to_calibrate=parameters_to_calibrate, 
-                t_train=T_hist,
-                x_transform=transform[1],
-                keys=keys,
-                country=country
-            )
 
 
     if "forecast" in argv:
-        forecasts = {",".join(to_short_names(s)): forecast(p, final_params, final_initial) for p, s in zip(statistics_posteriors, statistics_versions)}
-        forecasts.update({f"nn_{name}": forecast(p, final_params, final_initial) for p, name in zip(nn_posteriors, nn_versions)})
-        forecasts.update({f"nre_{','.join(to_short_names(s))}": forecast(r, final_params, final_initial) for r, s in zip(statistics_nres, statistics_versions)})
-        forecasts.update({f"nn_nre_{name}": forecast(r, final_params, final_initial) for r, name in zip(nn_nres, nn_versions)})
+        forecasts = {",".join(to_short_names(s)): forecast(p, final_params, final_initial, T_forecast, keys, final_calibration, country) for p, s in zip(statistics_posteriors, statistics_versions)}
+        forecasts.update({f"nn_{name}": forecast(p, final_params, final_initial, T_forecast, keys, final_calibration, country) for p, name in zip(nn_posteriors, nn_versions)})
+        forecasts.update({f"nre_{','.join(to_short_names(s))}": forecast(r, final_params, final_initial, T_forecast, keys, final_calibration, country) for r, s in zip(statistics_nres, statistics_versions)})
+        forecasts.update({f"nn_nre_{name}": forecast(r, final_params, final_initial, T_forecast, keys, final_calibration, country) for r, name in zip(nn_nres, nn_versions)})
         
-        abm_forecast = run_monte_carlo(final_params, final_initial, T_forecast, num_simulations=100, calibration_date=final_calibration, keys=keys, country=country)[1:]
+        abm_forecast = run_monte_carlo(final_params, final_initial, T_forecast, num_simulations=100, calibration_date=final_calibration, keys=keys, country=country)
         forecasts["ABM_base"] = abm_forecast
 
-        rolling_rsmfes = plot_forecasts(forecasts, realized_future, parameters_to_calibrate, bounds)
+        rolling_rsmfes = plot_forecasts(forecasts, realized_future, parameters_to_calibrate, bounds, keys, country)
 
         print("Rolling RMSFEs:")
         for key, value in rolling_rsmfes.items():
