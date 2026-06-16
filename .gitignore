@@ -15,6 +15,7 @@ pngs
 *.pkl
 *.zip
 *.pdf
+*.pptx
 Project.toml
 Manifest.toml
 calbrete_before_it.jl

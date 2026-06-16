@@ -146,6 +146,42 @@ class SeqEmbedding(nn.Module):
 		_, h = self.gru(x)
 		return self.head(h[-1])
 	
+class SimpleHierarchical(nn.Module):
+	def __init__ (self, calibration_dates, T, n_features, hidden_size, out_dim):
+		super().__init__()
+		self.T, self.n_features, self.hidden_size, self.out_dim = T, n_features, hidden_size, out_dim
+		self.n_calibration_dates = calibration_dates
+
+		self.gru = nn.GRU(
+			input_size=n_features,
+			hidden_size = hidden_size,
+			num_layers=2,
+			batch_first=True,
+		)
+
+		self.head = nn.Linear(
+			hidden_size, 
+			out_dim,
+		)
+
+	def forward(self, x):
+		# x is (CALIBRATION_DATES, N_RUNS, n_features, T_hist + 1)
+		### take average of the runs
+		x = x.reshape(-1, self.n_calibration_dates, self.n_features, self.T) # (batch_size, T, n_features)
+	
+		### compact to (batch_size, T, n_features)
+		batch_size = x.shape[0]
+		x = x.reshape(batch_size * self.n_calibration_dates, self.n_features, self.T) # (batch_size * n_calibration_dates, n_features, T)
+
+		### for gru
+		x = x.permute(0, 2, 1) # (batch_size * n_calibration_dates, T, n_features)
+		
+		_, h = self.gru(x) ### h: (1, batch_size * n_calibration_dates, hidden_size)
+		
+		h_out = h[-1].reshape(batch_size, self.n_calibration_dates, self.hidden_size) # (batch_size, n_calibration_dates * hidden_size)
+		
+		return self.head(h_out.mean(dim=1))
+	
 class Hierarchical(nn.Module):
 	def __init__ (self, calibration_dates, T, n_features, hidden_sizes, out_dim):
 		super().__init__()
@@ -208,6 +244,15 @@ if __name__ == "__main__":
 
 	print(seq.forward(randn(1, 3, 10).flatten()))
 
+	simple = SimpleHierarchical(
+		calibration_dates = 5,
+		T = 10,
+		n_features = 3,
+		hidden_size = 64,
+		out_dim = 16,
+	)
+	print(simple.forward(randn(1, 5, 3, 10).flatten()))
+
 	hierarchical = Hierarchical(
 		calibration_dates = 5,
 		T = 10,
@@ -221,5 +266,7 @@ if __name__ == "__main__":
 	print("Num of trainable parameters:")
 	print(sum(p.numel() for p in cnn.parameters() if p.requires_grad))
 	print(sum(p.numel() for p in seq.parameters() if p.requires_grad))
+	print(sum(p.numel() for p in simple.parameters() if p.requires_grad))
 	print(sum(p.numel() for p in hierarchical.parameters() if p.requires_grad))
+	
 	

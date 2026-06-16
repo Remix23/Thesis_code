@@ -19,7 +19,7 @@ from sbi.neural_nets.embedding_nets import (
     CausalCNNEmbedding
 )
 
-from neural_network import RNN, CNN_GDP, SeqEmbedding, Hierarchical
+from neural_network import RNN, CNN_GDP, SeqEmbedding, Hierarchical, SimpleHierarchical
 
 from sbi.diagnostics import check_sbc, run_sbc
 from sbi.analysis import sbc_rank_plot
@@ -274,7 +274,7 @@ def load_custom ():
     priors_bounds = [
         (0, 1),  # omega
         (0.001, 5),  # lambda_p
-        (0.5, 1),  # pi_bar
+        (0, 2),  # pi_bar
     ]
 
     return parameters_to_calibrate, priors_bounds
@@ -331,7 +331,7 @@ def load_data():
     if "n_runs" in data.files:
         global NUM_RUNS_PER_DRAW, NUM_CALIBRATION_DATES, FIRST_CALIBRATION_DATE, NUM_SIM_PER_ROUND
         NUM_RUNS_PER_DRAW = data["n_runs"].item()
-        NUM_SIM_PER_ROUND = loaded_sim_out.shape(0)
+        NUM_SIM_PER_ROUND = loaded_sim_out.shape[0]
         NUM_CALIBRATION_DATES = data["num_calibrations"].item()
         FIRST_CALIBRATION_DATE = datetime.strptime(data["starting_calibration_date"].item(), '%Y-%m-%d')
 
@@ -348,7 +348,9 @@ def save_posteriors (posteriors, verions, file_name):
             "num_calibration_dates": NUM_CALIBRATION_DATES,
             "num_sim_per_round": NUM_SIM_PER_ROUND,
             "rounds": ROUNDS,
-            "first_calibration_date": FIRST_CALIBRATION_DATE.strftime('%Y-%m-%d')
+            "first_calibration_date": FIRST_CALIBRATION_DATE.strftime('%Y-%m-%d'),
+            "bounds": bounds,
+            "parameters_to_calibrate": parameters_to_calibrate,
             }, f)
     print(f"Saved posteriors to {file_name}")
 
@@ -520,15 +522,23 @@ def ppc_plot (observed_values, sim_out_transformed, filename):
     plt.savefig(filename)
     plt.close()
 
-def ppc_trajectories (observed_trajectory, sim_out_trajectories, filename):
-    plt.figure(figsize=(12, 8))
-    for traj in sim_out_trajectories:
-        plt.plot(traj, color="blue", alpha=0.1)
-    plt.plot(observed_trajectory, color="red", linewidth=2, label="Observed Trajectory")
-    plt.title("Posterior Predictive Check: Trajectories")
-    plt.xlabel("Time")
-    plt.ylabel("Value")
-    plt.legend()
+def ppc_trajectories (observed_data, sim_out_trajectories, keys, country, filename):
+    n_rows= 2
+    ncols= len(keys) // n_rows + len(keys) % n_rows
+    fig, axs = plt.subplots(2, len(keys) // 2 + len(keys) , figsize=(12, 4 * len(keys)))
+    if len(keys) == 1:
+        axs = [axs]
+
+    for i, key in enumerate(keys):
+        row = i // ncols
+        col = i % ncols
+        for sim_out in sim_out_trajectories:
+            axs[row, col].plot(sim_out[i, :], color="blue", alpha=0.1)
+        axs[row, col].plot(observed_data[key].values, color="red", label="Observed")
+        axs[row, col].set_title(f"{key} trajectories vs observed")
+        axs[row, col].legend()
+    
+    plt.title(f"Posterior Predictive Check - Trajectories for {country}")
     plt.savefig(filename)
     plt.close()
 
@@ -587,6 +597,7 @@ def gen_sweep_dataset (sim_per_point, points_per_dim,parameters_to_calibrate, pr
             sweep_x = sweep_x.squeeze(2)
             ### we are left with (sim_per_point, num_calibrations, len(keys), T_hist + 1)
             out[i, j, :, :, :, :] = sweep_x
+            print(f"Generated sweep data for parameter {parameters_to_calibrate[i]} at value {val:.4f} ({j + 1}/{points_per_dim})")
 
     return sweep_theta_values, theta_base, out
 
@@ -701,7 +712,99 @@ if __name__ == "__main__":
         parameters_to_calibrate, bounds = load_custom()
     # parameters_to_calibrate = parameters_to_calibrate.tolist()
 
-    ### initial calibration
+
+    ### statistics
+    s1 = ["mean", "std", "yearly_corr", "ar1_coeff", "min", "max", "skewness", "quantile_50", "recession_count"]
+    s1_prime = ["mean", "std", "yearly_corr", "ar1_coeff", "min", "skewness", "kurtosis", "recession_count"]
+    s2 = ["mean", "std", "yearly_corr", "ar1_coeff", "ar2_coeff", "min", "skewness", "kurtosis"]
+    s_base = ["mean", "std", "min", "max", "auto_corr_1", "auto_corr_2", "auto_corr_3","quantile_25", "quantile_50", "quantile_75"]
+
+    s_base_seq = s_base + ["sequential"]
+    s1_seq = s1 + ["sequential"]    
+
+    ### NPE
+    statistics_versions = []
+    statistics_posteriors = []
+    statistics_nres = []
+    posteriors_hist = []
+
+    ### networking embedding
+    nns = []
+    nn_posteriors = []
+    nn_nres = []
+    nn_transforms = []
+    nn_versions = []
+    nn_keys = []
+    nn_cal_nums = []
+
+    if "load_posteriors" in argv:
+        post_dir = "trained_posteriors"
+        post_files = [f for f in listdir(post_dir) if f.endswith(".pkl")]
+        for i, file in enumerate(post_files):
+            print(f"{i + 1}. {file}")
+        file_index = int(input("Enter the number corresponding to the file you want to load: ")) - 1
+        
+        if file_index < 0 or file_index >= len(post_files):
+            print("Invalid index. Exiting.")
+            exit()
+        base_name = post_files[file_index].split("_")[1:]
+        posterior_name = "posteriors_" + "_".join(base_name)
+        ratio_name = "ratios_" + "_".join(base_name)
+        posteriors_path = path.join(post_dir, posterior_name)
+        ratio_path = path.join(post_dir, ratio_name)
+        if path.exists(posteriors_path):
+            with open(posteriors_path, "rb") as f:
+                data = pickle.load(f)
+                posteriors = data["posteriors"]
+                bounds = data["bounds"]
+                parameters_to_calibrate = data["parameters_to_calibrate"]
+
+                COUNTRY = data["country"]
+                ROUNDS = data["rounds"]
+                NUM_SIM_PER_ROUND = data["num_sim_per_round"]
+                NUM_CALIBRATION_DATES = data["num_calibration_dates"]
+                FIRST_CALIBRATION_DATE = datetime.strptime(data["first_calibration_date"], "%Y-%m-%d")
+
+
+        if path.exists(ratio_path):
+            with open(ratio_path, "rb") as f:
+                data = pickle.load(f)
+                nres = data["posteriors"]
+                bounds = data["bounds"]
+                parameters_to_calibrate = data["parameters_to_calibrate"]
+
+                COUNTRY = data["country"]
+                ROUNDS = data["rounds"]
+                NUM_SIM_PER_ROUND = data["num_sim_per_round"]
+                NUM_CALIBRATION_DATES = data["num_calibration_dates"]
+                FIRST_CALIBRATION_DATE = datetime.strptime(data["first_calibration_date"], "%Y-%m-%d")
+        
+        print("[Setting global variables from loaded data]")
+        print(f"COUNTRY: {COUNTRY}")
+        print(f"ROUNDS: {ROUNDS}")
+        print(f"NUM_SIM_PER_ROUND: {NUM_SIM_PER_ROUND}")
+        print(f"NUM_CALIBRATION_DATES: {NUM_CALIBRATION_DATES}")
+        print(f"FIRST_CALIBRATION_DATE: {FIRST_CALIBRATION_DATE.strftime('%Y-%m-%d')}")
+
+        for key, posterior in posteriors.items():
+            if key.startswith("stat_"):
+                statistics_posteriors.append(posterior)
+            elif key.startswith("nn_"):
+                nn_posteriors.append(posterior)
+
+        for key, nre in nres.items():
+            if key.startswith("stat_"):
+                statistics_nres.append(nre)
+            elif key.startswith("nn_"):
+                nn_nres.append(nre)
+        print(f"[NPE] Loaded {len(statistics_posteriors)} statistics-based posteriors\n[NPE] Loaded {len(nn_posteriors)} NN-based posteriors from {posterior_name}")
+        print(f"[NRE] Loaded {len(statistics_nres)} statistics-based NREs\n[NRE] Loaded {len(nn_nres)} NN-based NREs from {ratio_name}")
+    
+     ### initial calibration
+
+    priors = BoxUniform(low=torch.tensor(bounds, device="mps")[:, 0], high=torch.tensor(bounds, device="mps")[:, 1])
+    # priors = torch.distributions.Uniform(low=torch.tensor(bounds, device="mps")[:, 0], high=torch.tensor(bounds, device="mps")[:, 1])
+
     initial_calibration = FIRST_CALIBRATION_DATE
 
     n = 3 # number of years to simulate -> 5 years
@@ -719,7 +822,7 @@ if __name__ == "__main__":
         "real_government_consumption_quarterly",
         "real_capitalformation_quarterly",
     ]
-
+    
     country = COUNTRY
 
     data, quarterly_dates = jl.get_real(keys, country)
@@ -746,52 +849,6 @@ if __name__ == "__main__":
     hist_params["pi_bar"] = 1
     final_params["pi_bar"] = 1
 
-
-    priors = BoxUniform(low=torch.tensor(bounds, device="mps")[:, 0], high=torch.tensor(bounds, device="mps")[:, 1])
-    # priors = torch.distributions.Uniform(low=torch.tensor(bounds, device="mps")[:, 0], high=torch.tensor(bounds, device="mps")[:, 1])
-
-    ### NPE training
-
-    ### statistics
-    s1 = ["mean", "std", "yearly_corr", "ar1_coeff", "min", "max", "skewness", "quantile_50", "recession_count"]
-    s1_prime = ["mean", "std", "yearly_corr", "ar1_coeff", "min", "skewness", "kurtosis", "recession_count"]
-    s2 = ["mean", "std", "yearly_corr", "ar1_coeff", "ar2_coeff", "min", "skewness", "kurtosis"]
-    s_base = ["mean", "std", "min", "max", "auto_corr_1", "auto_corr_2", "auto_corr_3","quantile_25", "quantile_50", "quantile_75"]
-
-    s_base_seq = s_base + ["sequential"]
-    s1_seq = s1 + ["sequential"]    
-
-    ### NPE
-    statistics_versions = []
-    statistics_posteriors = []
-    statistics_nres = []
-    posteriors_hist = []
-
-    if not "load_posteriors" in argv:
-
-        for i, s in enumerate(statistics_versions):
-            final_posterior, posteriors = train_npe_statistics_rounds(priors, s, hist_params, hist_initial, 
-                                            parameters_to_calibrate, observed_series["real_gdp"].values[:T_hist + 1], 
-                                            t_train = T_hist, rounds=ROUNDS, n_sim_per_round=NUM_SIM_PER_ROUND)
-            posteriors_hist.append((s, posteriors))
-            statistics_posteriors.append(final_posterior)
-        
-        for i, s in enumerate(statistics_versions):
-            final_ratio, ratios = train_nre_statistics_rounds(priors, s, hist_params, hist_initial, 
-                                            parameters_to_calibrate, observed_series["real_gdp"].values[:T_hist + 1], 
-                                            t_train = T_hist, rounds=ROUNDS, n_sim_per_round=NUM_SIM_PER_ROUND)
-            
-            statistics_nres.append(final_ratio)
-
-    ### networking embedding
-    nns = []
-    nn_posteriors = []
-    nn_nres = []
-    nn_transforms = []
-    nn_versions = []
-    nn_keys = []
-    nn_cal_nums = []
-
     if "nn" in argv:
 
         nn_raw = CausalCNNEmbedding(
@@ -817,17 +874,8 @@ if __name__ == "__main__":
             output_dim=12,
         )
 
-        ### rnn as in Dyer et. al. (2024) and labour market
-        nn_rnn = RNN(
-            input_dim=T_hist,
-            flavour="gru",
-            hidden_dim=32,
-            num_layers=2,
-            mlp_dims=12
-        )
-
         seq_multivariate = SeqEmbedding(
-            T = T_hist,
+        T = T_hist,
             n_features = len(keys),
             hidden_size = 64,
             out_dim = 16
@@ -836,6 +884,14 @@ if __name__ == "__main__":
         to_seq_theta = lambda x: x.repeat_interleave(NUM_CALIBRATION_DATES, dim=0)
         ### take the last calibration date: (n_samples, calibration data, n feature, T)
         to_seq_x_o = lambda x: x[:, -1, :, 1:]
+
+        simple_hierarchical = SimpleHierarchical(
+            calibration_dates=NUM_CALIBRATION_DATES,
+            n_features=len(keys),
+            T=T_hist,
+            hidden_size=64,
+            out_dim=16
+        )
 
         hierarchical = Hierarchical(
             calibration_dates=NUM_CALIBRATION_DATES,
@@ -846,11 +902,6 @@ if __name__ == "__main__":
         )
         to_hierarchical_x = lambda x: x[..., 1:]
         to_hierarchical_theta = lambda x: x
-
-
-        s_nn = ["mean", "std", "yearly_corr", "ar1_coeff", "ar2_coeff", "min", "skewness", "kurtosis"]
-
-        nn_cnn_mixture = CNN_GDP(stat_keys=s_nn, in_channels=3, conv_dims=[16, 32], summary_dims=16, out_dims=32, pool_kernel_size=1)
 
         nns += [seq_multivariate] # nn_raw, nn_diff, nn_3channels, nn_rnn, nn_cnn_mixture,
         x_transforms = [to_seq_x]
@@ -863,6 +914,22 @@ if __name__ == "__main__":
         nn_cal_nums += [NUM_CALIBRATION_DATES]
 
         assert len(nns) == len(nn_versions) == len(nn_transforms) == len(nn_keys), "Length of nns, nn_versions, nn_transforms and nn_keys must be the same"
+
+    if not "load_posteriors" in argv:
+
+        for i, s in enumerate(statistics_versions):
+            final_posterior, posteriors = train_npe_statistics_rounds(priors, s, hist_params, hist_initial, 
+                                            parameters_to_calibrate, observed_series["real_gdp"].values[:T_hist + 1], 
+                                            t_train = T_hist, rounds=ROUNDS, n_sim_per_round=NUM_SIM_PER_ROUND)
+            posteriors_hist.append((s, posteriors))
+            statistics_posteriors.append(final_posterior)
+        
+        for i, s in enumerate(statistics_versions):
+            final_ratio, ratios = train_nre_statistics_rounds(priors, s, hist_params, hist_initial, 
+                                            parameters_to_calibrate, observed_series["real_gdp"].values[:T_hist + 1], 
+                                            t_train = T_hist, rounds=ROUNDS, n_sim_per_round=NUM_SIM_PER_ROUND)
+            
+            statistics_nres.append(final_ratio)
 
     ### append NN-based posteriors
     if not "load_posteriors" in argv:
@@ -879,56 +946,6 @@ if __name__ == "__main__":
         #     post, posteriors = train_nre_nn_batched(priors, nn, transform, parameters_to_calibrate, observed_series, T_hist, key_list, country, rounds=ROUNDS, n_sim_per_round=NUM_SIM_PER_ROUND, num_calibrations=cal_num)
         #     nn_nres.append(post)
 
-    if "load_posteriors" in argv:
-        post_dir = "trained_posteriors"
-        post_files = [f for f in listdir(post_dir) if f.endswith(".pkl")]
-        for i, file in enumerate(post_files):
-            print(f"{i + 1}. {file}")
-        file_index = int(input("Enter the number corresponding to the file you want to load: ")) - 1
-        
-        if file_index < 0 or file_index >= len(post_files):
-            print("Invalid index. Exiting.")
-            exit()
-        base_name = post_files[file_index].split("_")[1:]
-        posterior_name = "posteriors_" + "_".join(base_name)
-        ratio_name = "ratios_" + "_".join(base_name)
-        posteriors_path = path.join(post_dir, posterior_name)
-        ratio_path = path.join(post_dir, ratio_name)
-        with open(posteriors_path, "rb") as f:
-            data = pickle.load(f)
-            posteriors = data["posteriors"]
-
-            country = data["country"]
-            ROUNDS = data["rounds"]
-            NUM_SIM_PER_ROUND = data["num_sim_per_round"]
-            NUM_CALIBRATION_DATES = data["num_calibration_dates"]
-            FIRST_CALIBRATION_DATE = datetime.strptime(data["first_calibration_date"], "%Y-%m-%d")
-
-            print("[Setting global variables from loaded data]")
-            print(f"COUNTRY: {country}")
-            print(f"ROUNDS: {ROUNDS}")
-            print(f"NUM_SIM_PER_ROUND: {NUM_SIM_PER_ROUND}")
-            print(f"NUM_CALIBRATION_DATES: {NUM_CALIBRATION_DATES}")
-            print(f"FIRST_CALIBRATION_DATE: {FIRST_CALIBRATION_DATE.strftime('%Y-%m-%d')}")
-
-        with open(ratio_path, "rb") as f:
-            data = pickle.load(f)
-            nres = data["posteriors"]
-
-        for key, posterior in posteriors.items():
-            if key.startswith("stat_"):
-                statistics_posteriors.append(posterior)
-            elif key.startswith("nn_"):
-                nn_posteriors.append(posterior)
-
-        for key, nre in nres.items():
-            if key.startswith("stat_"):
-                statistics_nres.append(nre)
-            elif key.startswith("nn_"):
-                nn_nres.append(nre)
-        print(f"[NPE] Loaded {len(statistics_posteriors)} statistics-based posteriors\n[NPE] Loaded {len(nn_posteriors)} NN-based posteriors from {posterior_name}")
-        print(f"[NRE] Loaded {len(statistics_nres)} statistics-based NREs\n[NRE] Loaded {len(nn_nres)} NN-based NREs from {ratio_name}")
-
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     if "save" in argv:
@@ -939,8 +956,9 @@ if __name__ == "__main__":
         ratios = {f"stat_{','.join(to_short_names(s))}": r for r, s in zip(statistics_nres, statistics_versions)}
         ratios.update({f"nn_{name}": r for r, name in zip(nn_nres, nn_versions)})
 
-        save_posteriors(posteriors, statistics_versions, f"trained_posteriors/posteriors_{COUNTRY}_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_{timestamp}.pkl")
-        save_posteriors(ratios, statistics_versions, f"trained_posteriors/ratios_{COUNTRY}_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_{timestamp}.pkl")
+        first_seed = np.random.get_state()[1][0]
+        save_posteriors(posteriors, statistics_versions, f"trained_posteriors/posteriors_{COUNTRY}_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_{timestamp}_seed_{first_seed}.pkl")
+        save_posteriors(ratios, statistics_versions, f"trained_posteriors/ratios_{COUNTRY}_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_{timestamp}_seed_{first_seed}.pkl")
 
     if "pp" in argv:
         ### pairplots for statistics-based NPE
@@ -961,17 +979,25 @@ if __name__ == "__main__":
         ### for statistics
         for p, s in zip(statistics_posteriors, statistics_versions):
             # x_o = compute_statistics_dict(observed_series["real"].values, s)
-            samples = p.sample((200,)).cpu()
+            samples = p.sample((100,)).cpu()
+
+            ### trajectoriesL (n_samples, n_keys, T_hist + 1)
             trajectories = np.array([run_monte_carlo(rep_parameters(hist_params, parameters_to_calibrate, sample.numpy()), hist_initial, T_hist, num_simulations=NUM_RUNS_PER_DRAW, calibration_date=initial_calibration, keys = keys, country=country) for sample in samples])
             file_name = f"pngs/ppc_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_p{len(parameters_to_calibrate)}_{','.join(to_short_names(s))}.png"
-            ppc_trajectories(observed_series["real_gdp"].values[:T_hist+1], trajectories, file_name)
+            ppc_trajectories(observed_series.values[:T_hist+1], trajectories, file_name)
         
         ### for NN-based
         for p, transform, name in zip(nn_posteriors, nn_transforms, nn_versions):
-            samples = p.sample((200,)).cpu()
-            trajectories = np.array([run_monte_carlo(rep_parameters(hist_params, parameters_to_calibrate, sample.numpy()), hist_initial, T_hist, num_simulations=NUM_RUNS_PER_DRAW, calibration_date=initial_calibration, keys = keys, country=country) for sample in samples])
-            file_name = f"pngs/ppc_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_p{len(parameters_to_calibrate)}_nn{name}.png"
-            ppc_trajectories(observed_series["real_gdp"].values[:T_hist+1], trajectories, file_name)
+            samples = p.sample((100,)).cpu()
+            
+            for year in range(NUM_CALIBRATION_DATES):
+                cal_year= initial_calibration.year + year
+                cal_date = datetime(cal_year, initial_calibration.month, initial_calibration.day)
+                real_data_ten = observed_series[observed_series["date"] >= cal_date].iloc[:T_hist + 1, 1:].values.T
+                
+                trajectories = np.array([run_monte_carlo(rep_parameters(hist_params, parameters_to_calibrate, sample.numpy()), hist_initial, T_hist, num_simulations=NUM_RUNS_PER_DRAW, calibration_date=initial_calibration, keys = keys, country=country) for sample in samples])
+                file_name = f"pngs/ppc_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_p{len(parameters_to_calibrate)}_nn_{name}.png"
+                ppc_trajectories(real_data_ten, trajectories, file_name)
 
     if "ppc_stat" in argv:
         for p, s in zip(statistics_posteriors, statistics_versions):
@@ -987,9 +1013,8 @@ if __name__ == "__main__":
             ppc_plot(x_o, stats_out, file_name)
 
     ### validation batches:
-    num_prior_samples = 200
+    num_prior_samples = 1000
     num_posterior_samples = 1000
-    print(f"Running validation with {num_prior_samples} prior samples and {num_posterior_samples} posterior samples for each...")
 
     if not "load_validation" in argv:
         theta, sim_data = gen_batch(
@@ -1036,7 +1061,7 @@ if __name__ == "__main__":
 
     if "sweep" in argv or "load_sweep" in argv:
 
-        sim_per_point = 20
+        sim_per_point = 25
         points_per_dim = 9
         posterior_draws = 4000
 

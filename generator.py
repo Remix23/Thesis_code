@@ -41,13 +41,13 @@ def run_monte_carlo(parameters, initial_conditions, T, num_simulations, keys):
 
 
 ### initial calibration
-initial_calibration = datetime(2013, 3, 31)
+initial_calibration = datetime(2010, 3, 31)
 num_calibrations = 5
 
 n = 3  # number of years to simulate -> 3 years
 T_hist = 4 * n - 1  # quaters
 final_calibration = datetime(
-    initial_calibration.year + T_hist // 4, 12, initial_calibration.day
+    initial_calibration.year + num_calibrations + T_hist // 4, 12, initial_calibration.day
 )
 
 T_forecast = 4 * 3  # 3 years forecast
@@ -86,10 +86,8 @@ parameters_to_calibrate = ["omega", "lambda_p", "pi_bar"]
 priors_bounds = [
     (0, 1),  # omega
     (0.001, 5),  # lambda_p
-    (0.5, 1),  # pi_bar
+    (.5, 1.2),  # pi_bar
 ]
-
-        
 
 assert len(parameters_to_calibrate) == len(priors_bounds), "Number of parameters to calibrate must match number of prior bounds."
 
@@ -136,7 +134,7 @@ def run_prior_check(samples, real, cal_date, keys):
     # real: (len(keys), T + 1)
     # average accross runs
     avg_samples = np.mean(samples, axis=1)  # (n_samples, len
-    n_rows = int(np.ceil(len(keys) / 5))
+    n_rows = int(np.ceil(len(keys) / 4))
     n_cols = 4
     fig, axs = plt.subplots(n_rows, n_cols, figsize=(24, 16))
     for i in range(avg_samples.shape[1]): ### for all keys
@@ -148,7 +146,8 @@ def run_prior_check(samples, real, cal_date, keys):
         plt.title(f"Prior check for key: {keys[i]}")
         plt.xlabel(f"Time, from {cal_date.strftime('%Y-%m-%d')}")
         plt.ylabel(keys[i])
-    plt.savefig(f"pngs/{country}_prior_check_{cal_date.strftime('%Y-%m-%d')}.png")
+    file_end = f"p_{",".join(parameters_to_calibrate)}_bounds{','.join([str(b) for b in priors_bounds.numpy()])}"
+    plt.savefig(f"pngs/prior_checks/{country}_prior_check_{cal_date.strftime('%Y-%m-%d')}_{file_end}.png")
     plt.legend(loc="upper left")
     plt.close()
     
@@ -274,9 +273,11 @@ nans = np.isnan(samples.numpy())
 is_row_nan = np.any(nans, axis=(2, 3, 4))  # check if any value in the row is NaN
 print(f"Number of NaNs in samples: {is_row_nan.sum()} out of {nans.size} total values")
 
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
 ### save
 np.savez(
-    f"data_npz/training/{country}_prior_samples_n{n_histories}_{','.join(parameters_to_calibrate)}_bounds{','.join([str(b) for b in priors_bounds.numpy()])}.npz",
+    f"data_npz/training/{country}_prior_samples_n{n_histories}_{','.join(parameters_to_calibrate)}_bounds{','.join([str(b) for b in priors_bounds.numpy()])}_{timestamp}.npz",
     sim_out=samples,
     theta_draw = prior_draws,
     bounds = priors_bounds.numpy(),
