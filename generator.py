@@ -80,13 +80,13 @@ final_params, final_initial = jl.calibrate(
 )
 ### gen historical date for NPE
 
-# parameters_to_calibrate = ["zeta_b", "omega", "lambda_p"]
 parameters_to_calibrate = ["omega", "lambda_p", "pi_bar"]
+# parameters_to_calibrate = ["lambda_p"] # --- IGNORE ---
 
 priors_bounds = [
     (0, 1),  # omega
     (0.001, 5),  # lambda_p
-    (.5, 1.2),  # pi_bar
+    (0, 2),  # pi_bar
 ]
 
 assert len(parameters_to_calibrate) == len(priors_bounds), "Number of parameters to calibrate must match number of prior bounds."
@@ -244,10 +244,67 @@ def gen_sweep_dataset (parameters_to_calibrate, priors_bounds, priors, country):
         )
     return sweep_theta_values, out
 
+def sweep_prior (parameters_to_calibrate, priors_bounds, priors, country):
+
+    lowers, uppers = priors_bounds.detach().clone().T
+    theta_base = (lowers + uppers) / 2
+
+    num_points_per_dim = 9
+    sim_per_point = 50
+
+    x_plot = torch.zeros((num_points_per_dim, len(avaible_keys), T_hist + 1))
+
+    n_rows = int(np.ceil(len(keys) / 4))
+    n_cols = 4
+
+    for i in range(len(theta_base)):
+        low, high = priors_bounds[i]
+        sweep_values = torch.linspace(low, high, num_points_per_dim + 2)[1:-1]
+        fig, axs = plt.subplots(n_rows, n_cols, figsize=(24, 16))
+
+        for j, val in enumerate(sweep_values):
+            theta_sweep = theta_base.clone()
+            theta_sweep[i] = val
+
+            _, sweep_x = gen_batch(
+                calibration_date=initial_calibration,
+                num_calibrations=1,
+                T=T_hist,
+                priors = priors,
+                params_to_calibrate=parameters_to_calibrate,
+                n_samples=1,
+                n_runs=sim_per_point,
+                keys=avaible_keys,
+                country=country,
+                sample_theta = theta_sweep,
+            )
+            sweep_x = sweep_x.squeeze((0, 1)) # (sim_per_point, len(keys), T_hist + 1)
+            avg_samples = torch.mean(sweep_x, axis=0)  # (n_samples, len
+            x_plot[j, :, :] = avg_samples
+            print(f"Sweep for {parameters_to_calibrate[i]} = {val:.3f} done.")
+
+        for j in range(x_plot.shape[1]): ### for all keys
+            idx = np.unravel_index(j, (n_rows, n_cols))
+            plt.sca(axs[idx])
+            for k in range(x_plot.shape[0]): ### for all samples
+                plt.plot(x_plot[k, j, :], alpha=0.5, label=f"{parameters_to_calibrate[i]} = {sweep_values[k]:.3f}")
+            plt.title(f"{keys[j]}")
+            plt.xlabel(f"{initial_calibration.strftime('%Y-%m-%d')}")
+            plt.ylabel(keys[j])
+
+
+        plt.legend(loc="upper left")
+        plt.show()
+
 n_runs = 5
 keys = avaible_keys
 samples = np.zeros((n_histories, num_calibrations, n_runs, len(keys), T_hist + 1))
 prior_draws = np.zeros((num_calibrations, n_histories, len(parameters_to_calibrate)))
+
+
+if "sweep_prior" in argv:
+    sweep_prior(parameters_to_calibrate, priors_bounds, priors, country)
+    exit()
 
 ### real data
 
@@ -267,7 +324,7 @@ if "prior_check" in argv:
         real_data_ten = df[df["date"] >= cal_date].iloc[:T_hist + 1, 1:].values.T
         run_prior_check(samples[:, i, :, :, :].numpy(), real_data_ten, cal_date, keys)
 
-print(df.head(n = 20))
+
 
 nans = np.isnan(samples.numpy())
 is_row_nan = np.any(nans, axis=(2, 3, 4))  # check if any value in the row is NaN

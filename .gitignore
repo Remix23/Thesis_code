@@ -5,6 +5,7 @@ papers
 data
 data_npz
 pngs
+archive
 *.docx
 *.aux
 *.fdb_latexmk
