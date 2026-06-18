@@ -86,7 +86,7 @@ parameters_to_calibrate = ["omega", "lambda_p", "pi_bar"]
 priors_bounds = [
     (0, 1),  # omega
     (0.001, 5),  # lambda_p
-    (0, 2),  # pi_bar
+    (0, 1.5),  # pi_bar
 ]
 
 assert len(parameters_to_calibrate) == len(priors_bounds), "Number of parameters to calibrate must match number of prior bounds."
@@ -296,7 +296,7 @@ def sweep_prior (parameters_to_calibrate, priors_bounds, priors, country):
         plt.legend(loc="upper left")
         plt.show()
 
-n_runs = 5
+n_runs = 1
 keys = avaible_keys
 samples = np.zeros((n_histories, num_calibrations, n_runs, len(keys), T_hist + 1))
 prior_draws = np.zeros((num_calibrations, n_histories, len(parameters_to_calibrate)))
@@ -344,3 +344,4 @@ np.savez(
     starting_calibration_date = initial_calibration.strftime('%Y-%m-%d'),
 )
 
+df.to_csv(f"data_npz/real_data/{country}_real_data_{timestamp}.csv", index=False)

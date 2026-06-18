@@ -53,7 +53,7 @@ NUM_SIM_PER_ROUND = 10
 
 COUNTRY = "IT"
 
-NUM_RUNS_PER_DRAW = 5
+NUM_RUNS_PER_DRAW = 1
 
 ROUNDS = 1
 
@@ -155,6 +155,8 @@ def unrol_mc_runs (theta, sim_out):
     ### out: (n_samples * n_runs, n_parameters), (n_samples * n_runs, n_calibration_dates, n_features, T + 1)
     n_samples, n_calibration_dates, n_runs, n_features, T_plus_1 = sim_out.shape
     theta_unrolled = theta.repeat_interleave(n_runs, dim=0) # (n_samples * n_runs, n_parameters)
+    
+    sim_out = sim_out.permute(0, 2, 1, 3, 4) # (n_samples, n_runs, n_calibration_dates, n_features, T + 1)
     sim_out_unrolled = sim_out.reshape(n_samples * n_runs, n_calibration_dates, n_features, T_plus_1) # (n_samples * n_runs, n_calibration_dates, n_features, T + 1)
     return theta_unrolled, sim_out_unrolled
     
@@ -181,6 +183,8 @@ def prepare_real (observed, keys, num_calibrations):
     return out
 
 to_log_growth = lambda x: np.diff(np.log(x), axis=-1)
+
+to_log_diff_torch = lambda x: torch.diff(torch.log(x), dim=-1)
 
 
 to_log = lambda x: torch.log(x)
@@ -416,24 +420,30 @@ def train_nre_nn_batched (priors, nn, nn_transform, params_to_calibrate, observe
         z_score_x="structured"
     )
     theta_transform, x_transform, x_o_transform = nn_transform
-    x_o = x_o_transform(prepare_real(observed, features_kyes, num_calibrations).unsqueeze(0)).flatten()
+    x_o = x_o_transform(prepare_real(observed, features_kyes, num_calibrations).unsqueeze(0)).flatten() # (1, n_features, T_hist + 1) -> (1, embedding_dim)
     inference = NRE(prior = priors, classifier=classifier, device="mps")
     proposal = priors
-    proposals = []
     for i in range(rounds):
-        proposals.append(proposal)
-
+        force_gen = True if i > 0 else False
         theta_draws, sim_out = gen_batch(FIRST_CALIBRATION_DATE, num_calibrations, 
-                                       t_train, proposal, params_to_calibrate, n_sim_per_round, NUM_RUNS_PER_DRAW, features_kyes, country)
+                                       t_train, proposal, params_to_calibrate, n_sim_per_round, NUM_RUNS_PER_DRAW, features_kyes, country, force_gen)
         
+        # print(f"Generated batch with shape {batch.shape} for round {i + 1}/{rounds}")
         theta_draws, sim_out = unrol_mc_runs(theta_draws, sim_out)
+        # print(f"Unrolled batch to shape {batch.shape} for round {i + 1}/{rounds}")
+
+        batch = x_transform(sim_out) # (n_samples * n_runs, n_calibration
+        theta_draws = theta_transform(theta_draws) # (n_samples * n_runs, n_parameters)
         
-        
-        classifier = inference.append_simulations(theta_draws, sim_out, data_device="cpu").train()
+        # print(f"Transformed batch shape after NN transform: {batch.shape}")
+        batch = batch.flatten(start_dim=1)
+        print(f"Traning with:\n[theta_draws] shape: {theta_draws.shape}\n[batch] shape: {batch.shape}")
+
+        classifier = inference.append_simulations(theta_draws, batch, data_device="cpu").train()
         posterior = inference.build_posterior(density_estimator=classifier)
         proposal = posterior.set_default_x(x_o)
         print(f"\nCompleted round {i + 1}/{rounds} of NRE training with NN embedding {nn.__class__.__name__}")
-    return posterior, proposals
+    return posterior
 
 def train_npe_statistics_rounds (priors, stat_keys, params_to_calibrate, observed, t_train, features_kyes, country, rounds = 3, n_sim_per_round = 100, num_calibrations = NUM_CALIBRATION_DATES):
     
@@ -466,7 +476,7 @@ def train_npe_statistics_rounds (priors, stat_keys, params_to_calibrate, observe
         x = torch.tensor(npe_in, dtype=torch.float32)
         x = x.flatten(start_dim=1) # (n_samples * n_runs, n_statistics)
 
-        print(f"Traning with:\n[theta_draws] shape: {theta_draws.shape}\n[batch] shape: {x.shape}")
+        print(f"Traning NPE with:\n[theta_draws] shape: {theta_draws.shape}\n[batch] shape: {x.shape}")
 
         density_estimator = inference.append_simulations(theta_draws, x, proposal=proposal, data_device="cpu").train()
         posterior = inference.build_posterior(density_estimator=density_estimator)
@@ -476,36 +486,43 @@ def train_npe_statistics_rounds (priors, stat_keys, params_to_calibrate, observe
 
     return posterior
 
-def train_nre_statistics_rounds (priors, stat_keys, full_params, initial_conditions, params_to_calibrate, observed, t_train, country, rounds = 3, n_sim_per_round = 100, features_kyes = None):
-    inference = NRE(prior = priors)
-    x_o = compute_statistics_dict(observed, stat_keys)
+def train_nre_statistics_rounds (priors, stat_keys, params_to_calibrate, observed, t_train, features_kyes, country, rounds = 3, n_sim_per_round = 100, num_calibrations = NUM_CALIBRATION_DATES): 
+    
+    inference = NRE(prior = priors, device="mps")
+    
+    x_o = prepare_real(observed, features_kyes, num_calibrations) # (n_calibration_dates, n_features, T_hist + 1)
+    x_o = x_o[-1, :, 1:] # take the last calibration date
+    x_o = compute_statistics_dict(x_o.cpu().numpy(), stat_keys) # (n_features, n_statistics)
     x_o = torch.tensor(x_o, dtype=torch.float32)
+    x_o = x_o.flatten(start_dim=0) # (n_features * n_statistics
+
+    nre_in = np.zeros((n_sim_per_round * NUM_RUNS_PER_DRAW * NUM_CALIBRATION_DATES, len(features_kyes), len(stat_keys)))
+   
     proposal = priors
-
-    if features_kyes is None:
-        features_kyes = ["real_gdp"]
-
-    proposals = []
     for i in range(rounds):
-        proposals.append(proposal)
-        if i > 0:
-            theta = proposal.sample((n_sim_per_round, ), show_progress_bars=False)
-        else:
-            theta = proposal.sample((n_sim_per_round, ))
-        sim_data = np.array([run_monte_carlo(rep_parameters(full_params, params_to_calibrate, sample.numpy()), initial_conditions, t_train, num_simulations=NUM_RUNS_PER_DRAW, calibration_date=initial_calibration, keys=features_kyes, country=country) for sample in theta])
-        x = np.array([compute_statistics_dict(sim_out, stat_keys) for sim_out in sim_data])
-        idx = mark_outliers(x, m = 8, stat_names=stat_keys)
-        theta = theta[idx, :]
-        x = x[idx, :]
-        x = torch.tensor(x, dtype=torch.float32)
+        theta_draws, batch = gen_batch(FIRST_CALIBRATION_DATE, num_calibrations, 
+                                       t_train, proposal, params_to_calibrate, n_sim_per_round, NUM_RUNS_PER_DRAW, features_kyes, country)
+        
+        theta_draws, batch = unrol_mc_runs(theta_draws, batch)
+        theta_draws = torch.repeat_interleave(theta_draws, NUM_CALIBRATION_DATES, dim=0)
+        batch = batch.reshape(-1, batch.shape[2], batch.shape[3]) # (n_samples * n_runs, n_features, T_hist + 1)
 
-        density_estimator = inference.append_simulations(theta, x).train()
+
+        batch = batch.cpu().numpy()
+        for j in range(batch.shape[0]):
+            nre_in[j, :, :] = compute_statistics_dict(batch[j, :, :], stat_keys)
+        x = torch.tensor(nre_in, dtype=torch.float32)
+        x = x.flatten(start_dim=1) # (n_samples * n_runs, n_statistics)
+
+        print(f"Traning NRE with:\n[theta_draws] shape: {theta_draws.shape}\n[batch] shape: {x.shape}")
+
+        density_estimator = inference.append_simulations(theta, x, data_device = "cpu").train()
         posterior = inference.build_posterior(density_estimator=density_estimator)
         proposal = posterior.set_default_x(x_o)
         
         print(f"\nCompleted round {i + 1}/{rounds} of NRE training with statistics {', '.join(stat_keys)}")
 
-    return posterior, proposals
+    return posterior
 
 def pplot_stat (posterior, params, filename):
 
@@ -589,6 +606,7 @@ def load_sweep_data ():
         data["starting_calibration_date"],
         data["sweep_theta_base"],
     )
+
 def gen_sweep_dataset (sim_per_point, points_per_dim,parameters_to_calibrate, priors_bounds, priors, country, keys):
     lowers, uppers = torch.tensor(priors_bounds, dtype=torch.float32).T
     theta_base = torch.tensor((lowers + uppers) / 2, dtype=torch.float32)
@@ -630,10 +648,6 @@ def gen_sweep_dataset (sim_per_point, points_per_dim,parameters_to_calibrate, pr
     return sweep_theta_values, theta_base, out
 
 def sweep_posterior (posterior, bounds, sweep_data_x, sweep_data_theta, theta_base, parameters_to_calibrate, x_transform, sim_per_point, points_per_dim, posterior_draws, filename):
-    # lowers, uppers = torch.tensor(bounds, dtype=torch.float32).T
-
-    # theta_base = torch.tensor((lowers + uppers) / 2, dtype = torch.float32)
-
     fig, axes = plt.subplots(1, len(theta_base), figsize=(18, 5))
 
     for i, middle in enumerate(theta_base):
@@ -654,6 +668,10 @@ def sweep_posterior (posterior, bounds, sweep_data_x, sweep_data_theta, theta_ba
 
             sweep_x = sweep_x.to(posterior.device)
             post_samples = posterior.sample_batched((posterior_draws, ), x = sweep_x, show_progress_bars=False)
+
+            ### clamp to prior
+
+            # post_samples = post_samples.clamp(min=low, max=high)
             ### (post_draws, sim_per_point, n_parameters)
 
             post_samples = post_samples[:, :, i]
@@ -671,12 +689,12 @@ def sweep_posterior (posterior, bounds, sweep_data_x, sweep_data_theta, theta_ba
             medians = torch.median(post_samples, dim=0).values
             median_mean = torch.mean(medians)
             points_out[j, 0] = val
-            points_out[j, 1] = median_mean
+            points_out[j, 1] = median_mean.item()
 
             ### uncertainty interval
             lower, upper = torch.quantile(medians, torch.tensor([0.05, 0.95], device=medians.device))
-            points_out[j, 2] = lower
-            points_out[j, 3] = upper
+            points_out[j, 2] = lower.item()
+            points_out[j, 3] = upper.item()
 
         axes[i].plot(points_out[:, 0], points_out[:, 1], marker="o")
         axes[i].fill_between(points_out[:, 0], points_out[:, 2], points_out[:, 3], color="blue", alpha=0.2, label="90% credible interval")
@@ -695,6 +713,21 @@ def sweep_posterior (posterior, bounds, sweep_data_x, sweep_data_theta, theta_ba
     plt.suptitle(f"Sweep of posterior medians for each parameter with {posterior_draws} posterior samples and {sim_per_point} simulations per point")
     plt.savefig(f"pngs/{filename}")
     plt.close()
+
+
+def coverage_analysis (theta_true, posterior_samples, levels : torch.Tensor):
+    ### posterior_samples: (n_samples, n_parameters)
+    n_samples, n_parameters = posterior_samples.shape
+    coverage_results = {}
+
+    lower = torch.quantile(posterior_samples, levels, dim=0) # (n_levels, n_parameters)
+    upper = torch.quantile(posterior_samples, 1 - levels, dim=0) # (n_levels, n_parameters)
+
+    coverage = 
+
+    for level in levels
+    return coverage_results
+
 
 def forecast (posterior, final_params, final_initial, t_forecast, keys, calibration_date, country):
 
@@ -752,7 +785,7 @@ if __name__ == "__main__":
     s1_seq = s1 + ["sequential"]    
 
     ### NPE
-    statistics_versions = []
+    statistics_versions = [s_base]
     statistics_posteriors = []
     statistics_nres = []
     posteriors_hist = []
@@ -882,38 +915,17 @@ if __name__ == "__main__":
     hist_params["pi_bar"] = 1
     final_params["pi_bar"] = 1
 
-    to_seq_x = lambda x:x.reshape(x.shape[0] * x.shape[1], x.shape[2], x.shape[3])[..., 1:]
+    unrol_cal_dates = lambda x: x.reshape(x.shape[0] * x.shape[1], x.shape[2], x.shape[3])
+
+    to_seq_x = lambda x: to_log_diff_torch(x.reshape(x.shape[0] * x.shape[1], x.shape[2], x.shape[3]))
     to_seq_theta = lambda x: x.repeat_interleave(NUM_CALIBRATION_DATES, dim=0)
     ### take the last calibration date: (n_samples, calibration data, n feature, T)
-    to_seq_x_o = lambda x: x[:, -1, :, 1:]
+    to_seq_x_o = lambda x: to_log_diff_torch(x[:, -1, :, :])
 
-    to_hierarchical_x = lambda x: x[..., 1:]
+    to_hierarchical_x = lambda x: to_log_diff_torch(x)
     to_hierarchical_theta = lambda x: x
 
     if "nn" in argv:
-
-        nn_raw = CausalCNNEmbedding(
-            input_shape=(T_hist, ), # length of the time series
-            num_conv_layers=2,
-            pool_kernel_size=3,
-            output_dim=12,
-        )
-
-        nn_diff = CausalCNNEmbedding(
-            input_shape=(T_hist, ), ### because of the difference
-            num_conv_layers=2,
-            pool_kernel_size=3,
-            output_dim=12,
-        )
-
-        # ### three channels - log, growth rate, difference (as detrended)
-        nn_3channels = CausalCNNEmbedding(
-            input_shape=(T_hist, ), ### because of the difference
-            in_channels=3,
-            num_conv_layers=2,
-            pool_kernel_size=3,
-            output_dim=12,
-        )
 
         seq_multivariate = SeqEmbedding(
         T = T_hist,
@@ -940,15 +952,15 @@ if __name__ == "__main__":
         )
 
 
-        nns += [seq_multivariate] # nn_raw, nn_diff, nn_3channels, nn_rnn, nn_cnn_mixture,
-        x_transforms = [to_seq_x] # to_seq_x, to_seq_x, to_seq_x, to_seq_x, to_seq_x,
-        theta_transforms = [to_seq_theta] # to_seq_theta, to_seq_theta, to_seq_theta, to_seq_theta, to_seq_theta,
-        x_o_transforms = [to_seq_x_o] # to_seq_x_o, to_seq_x_o, to_seq_x_o, to_seq_x_o, to_seq_x_o,
+        nns += [simple_hierarchical, hierarchical] # nn_raw, nn_diff, nn_3channels, nn_rnn, nn_cnn_mixture,
+        x_transforms = [to_hierarchical_x, to_hierarchical_x] # to_seq_x, to_seq_x, to_seq_x, to_seq_x, to_seq_x,
+        theta_transforms = [to_hierarchical_theta, to_hierarchical_theta] # to_seq_theta, to_seq_theta, to_seq_theta, to_seq_theta, to_seq_theta,
+        x_o_transforms = [to_hierarchical_x, to_hierarchical_x] # to_seq_x_o, to_seq_x_o, to_seq_x_o, to_seq_x_o, to_seq_x_o,
         nn_transforms = list(zip(theta_transforms, x_transforms, x_o_transforms))
         # nn_transforms += [lambda x: reduction(x)[:, 1:], lambda x: to_growth_rate(reduction(x)), lambda x: x[..., 1:],  to_seq_multivariate]
-        nn_versions += ["seq_multivariate"] # "cnn_log", "cnn_growth_rate", "cnn_level",
-        nn_keys += [keys]
-        nn_cal_nums += [NUM_CALIBRATION_DATES]
+        nn_versions += ["simple_hierarchical", "hierarchical"] # "cnn_log", "cnn_growth_rate", "cnn_level",
+        nn_keys += [keys, keys] # [keys, keys, keys, keys, keys]
+        nn_cal_nums += [NUM_CALIBRATION_DATES, NUM_CALIBRATION_DATES] # [NUM_CALIBRATION_DATES, NUM_CALIBRATION_DATES, NUM_CALIBRATION_DATES, NUM_CALIBRATION_DATES, NUM_CALIBRATION_DATES]
 
         assert len(nns) == len(nn_versions) == len(nn_transforms) == len(nn_keys), "Length of nns, nn_versions, nn_transforms and nn_keys must be the same"
 
@@ -1135,7 +1147,7 @@ if __name__ == "__main__":
                 theta_base=theta_base,
                 parameters_to_calibrate=parameters_to_calibrate, 
                 ### x is four dim: (sim_per_point, num_calibrations, len(keys), T_hist + 1)
-                x_transform=lambda x: torch.stack([torch.tensor(compute_statistics_dict(batch, s), dtype=torch.float32) for batch in to_seq_x(x).cpu().numpy()], dim=0).to(posterior.device),
+                x_transform=lambda x: torch.stack([torch.tensor(compute_statistics_dict(batch, s), dtype=torch.float32) for batch in unrol_cal_dates(x).cpu().numpy()], dim=0).to(p.device),
                 sim_per_point=sim_per_point,
                 points_per_dim=points_per_dim,
                 posterior_draws=posterior_draws,
@@ -1158,22 +1170,38 @@ if __name__ == "__main__":
                 filename=f"sweep_posterior_medians_nn_{name}_from_posterior_{posterior_draws}_{timestamp}.png"
             )
 
+    ### validation
+
+    if "coverage" in argv:
+        
+        for p, s in zip(statistics_posteriors, statistics_versions):
+            print(f"Running coverage analysis for statistics embedding: {','.join(to_short_names(s))}")
+            coverage_analysis(
+                posterior=p,
+                bounds=bounds,
+                sim_out=sim_out,
+                theta_draws=theta_draws,
+                parameters_to_calibrate=parameters_to_calibrate,
+                x_transform=lambda x: torch.stack([torch.tensor(compute_statistics_dict(batch, s), dtype=torch.float32) for batch in unrol_cal_dates(x).cpu().numpy()], dim=0).to(p.device),
+                filename=f"coverage_stat_{','.join(to_short_names(s))}_from_posterior_{num_posterior_samples}_{timestamp}.png"
+            )
 
     if "sbc" in argv:
+
         for p, transform, name in zip(nn_posteriors, nn_transforms, nn_versions):
             print(f"Running SBC for NN embedding: {name}")
             theta_transform, x_transform, x_o_transform = transform
-            prior_draws = theta_transform(theta_draws)
 
             xs = x_transform(sim_out).flatten(start_dim=1)
-            theta, xs = remove_nans_and_infs_in_x(prior_draws, xs)
+            xs = xs[::sim_out.shape[1], :]
+            theta, xs = remove_nans_and_infs_in_x(theta_draws, xs)
             
             ranks, dap_samples = run_sbc(
                 thetas=theta,
                 xs=xs,
                 posterior=p,
                 num_posterior_samples=num_posterior_samples,
-                use_batched_sampling=True,
+                use_batched_sampling=False,
                 show_progress_bar=True,
             )
 
@@ -1215,14 +1243,14 @@ if __name__ == "__main__":
 
             ### sim out: (sim_per_point, num_calibrations, len(keys), T_hist + 1)
             print(f"Running SBC for statistics embedding: {s}")
-            
-            theta = torch.repeat_interleave(theta_draws, NUM_CALIBRATION_DATES, dim=0)
-            xs = sim_out.reshape(sim_out.shape[0] * sim_out.shape[1], sim_out.shape[2], sim_out.shape[3])[:, :, 1:]
+
+            # to_keep = torch.arange(0, sim_out.shape[0], step=sim_out.shape[1], dtype=torch.int32)
+            xs = unrol_cal_dates(sim_out)
             xs = xs.cpu().numpy()
             
-            sbc_in = torch.zeros(sim_out.shape[0] * sim_out.shape[1], sim_out.shape[2], len(s)) ### (num_prior_samples * num_calibrations, len(keys), len(statistics))
+            sbc_in = torch.zeros(sim_out.shape[0], sim_out.shape[2], len(s)) ### (num_prior_samples * num_calibrations, len(keys), len(statistics))
             for i in range(sbc_in.shape[0]):
-                stat_i = compute_statistics_dict(xs[i, :, :], s)
+                stat_i = compute_statistics_dict(xs[i * sim_out.shape[1], :, :], s)
                 sbc_in[i, :, :] = torch.tensor(stat_i, dtype=torch.float32)
             
             sbc_in = sbc_in.flatten(start_dim=1)
@@ -1235,7 +1263,7 @@ if __name__ == "__main__":
                 xs=sbc_in,
                 posterior=p,
                 num_posterior_samples=num_posterior_samples,
-                use_batched_sampling=True,
+                use_batched_sampling=False,
                 show_progress_bar=True,
             )
 

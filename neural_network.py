@@ -219,11 +219,11 @@ class Hierarchical(nn.Module):
 		### for gru
 		x = x.permute(0, 2, 1) # (batch_size * n_calibration_dates, T, n_features)
 		
-		_, h = self.gru1(x) ### h: (1, batch_size * n_calibration_dates, hidden_size)
+		_, h = self.gru1(x) ### h: (N_layers, batch_size * n_calibration_dates, hidden_size)
 		h = h[-1, : , :]
 		h = h.reshape(batch_size, self.n_calibration_dates, self.hidden_sizes[0]) # (batch_size, n_calibration_dates, hidden_size)
 		
-		_, h_over_calibration =self.gru2(h) ### h_over_calibration: (1, batch_size, hidden_size)
+		_, h_over_calibration =self.gru2(h) ### h_over_calibration: (num_layers, batch_size, hidden_size)
 
 		h_out = h_over_calibration[-1, :, :]
 		
