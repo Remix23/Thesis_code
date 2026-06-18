@@ -677,11 +677,13 @@ def sweep_posterior (posterior, bounds, sweep_data_x, sweep_data_theta, theta_ba
             post_samples = post_samples[:, :, i]
 
             ### Coverage:
-            q1 = torch.quantile(post_samples, 0.05, dim=0)
-            q3 = torch.quantile(post_samples, 0.95, dim=0)
-            coverage = torch.mean(((val >= q1) & (val <= q3)).float()).item()
-            # print(f"Sweep for parameter {param_name} at value {val:.4f}: 90% credible interval coverage: {coverage:.2%}")
-            print(f"Sweep for parameter {param_name} at value {val:.4f}: 90% credible interval coverage: {coverage:.2%} (should be close to 90%)")
+            # q1 = torch.quantile(post_samples, 0.05, dim=0)
+            # q3 = torch.quantile(post_samples, 0.95, dim=0)
+            # coverage = torch.mean(((val >= q1) & (val <= q3)).float()).item()
+            # # print(f"Sweep for parameter {param_name} at value {val:.4f}: 90% credible interval coverage: {coverage:.2%}")
+            # print(f"Sweep for parameter {param_name} at value {val:.4f}: 90% credible interval coverage: {coverage:.2%} (should be close to 90%)")
+
+            coverage_analysis(theta_sweep, post_samples, torch.tensor([0.05]), filename=f"coverage_{param_name}_{val:.4f}.csv")
 
             ### compute sweeping, mean medians, for sim_per_point
             ### only for considered parameters dimension
@@ -715,17 +717,29 @@ def sweep_posterior (posterior, bounds, sweep_data_x, sweep_data_theta, theta_ba
     plt.close()
 
 
-def coverage_analysis (theta_true, posterior_samples, levels : torch.Tensor):
+def coverage_analysis (theta_true, posterior_samples, levels : torch.Tensor, filename: str | None = None):
     ### posterior_samples: (n_samples, n_parameters)
+    ### theta_true: (n_parameters,)
     n_samples, n_parameters = posterior_samples.shape
     coverage_results = {}
+
+    theta_true = theta_true.reshape(1, -1) # (1, n_parameters)
 
     lower = torch.quantile(posterior_samples, levels, dim=0) # (n_levels, n_parameters)
     upper = torch.quantile(posterior_samples, 1 - levels, dim=0) # (n_levels, n_parameters)
 
-    coverage = 
+    coverage = torch.mean(((theta_true >= lower) & (theta_true <= upper)).float(), dim=0) # (n_parameters,)
 
-    for level in levels
+    for i, level in enumerate(levels):
+        coverage_results[level] = coverage[i].item()
+
+    if filename is not None:
+        with open(filename, "w") as f:
+            f.write("Level,Coverage\n")
+            for level in levels:
+                f.write(f"{level:.2%},{coverage_results[level]:.2%}\n")
+        print(f"Saved coverage results to {filename}")
+
     return coverage_results
 
 
