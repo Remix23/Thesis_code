@@ -34,6 +34,8 @@ import pandas as pd
 
 import pickle
 
+seed_value = 0
+
 torch.manual_seed(0)
 np.random.seed(0)
 
@@ -516,7 +518,7 @@ def train_nre_statistics_rounds (priors, stat_keys, params_to_calibrate, observe
 
         print(f"Traning NRE with:\n[theta_draws] shape: {theta_draws.shape}\n[batch] shape: {x.shape}")
 
-        density_estimator = inference.append_simulations(theta, x, data_device = "cpu").train()
+        density_estimator = inference.append_simulations(theta_draws, x, data_device = "cpu").train()
         posterior = inference.build_posterior(density_estimator=density_estimator)
         proposal = posterior.set_default_x(x_o)
         
@@ -683,7 +685,7 @@ def sweep_posterior (posterior, bounds, sweep_data_x, sweep_data_theta, theta_ba
             # # print(f"Sweep for parameter {param_name} at value {val:.4f}: 90% credible interval coverage: {coverage:.2%}")
             # print(f"Sweep for parameter {param_name} at value {val:.4f}: 90% credible interval coverage: {coverage:.2%} (should be close to 90%)")
 
-            coverage_analysis(theta_sweep, post_samples, torch.tensor([0.05]), filename=f"coverage_{param_name}_{val:.4f}.csv")
+            coverage_analysis(theta_sweep, post_samples, torch.tensor([0.05], device=post_samples.device), filename=f"coverage_{param_name}_{val:.4f}.csv")
 
             ### compute sweeping, mean medians, for sim_per_point
             ### only for considered parameters dimension
@@ -813,7 +815,7 @@ if __name__ == "__main__":
     nn_keys = []
     nn_cal_nums = []
 
-    if "load_posteriors" in argv:
+    if "load_npe" in argv or "load_nre" in argv:
         post_dir = "trained_posteriors"
         post_files = [f for f in listdir(post_dir) if f.endswith(".pkl")]
         for i, file in enumerate(post_files):
@@ -978,22 +980,22 @@ if __name__ == "__main__":
 
         assert len(nns) == len(nn_versions) == len(nn_transforms) == len(nn_keys), "Length of nns, nn_versions, nn_transforms and nn_keys must be the same"
 
-    if not "load_posteriors" in argv:
+    if not "load_npe" in argv:
 
         for i, s in enumerate(statistics_versions):
             final_posterior = train_npe_statistics_rounds(priors, s, parameters_to_calibrate, observed_series,                 
                                             t_train = T_hist, features_kyes=keys, country=country, rounds=ROUNDS, n_sim_per_round=NUM_SIM_PER_ROUND, num_calibrations=NUM_CALIBRATION_DATES)
             statistics_posteriors.append(final_posterior)
         
-        # for i, s in enumerate(statistics_versions):
-        #     final_ratio, ratios = train_nre_statistics_rounds(priors, s, hist_params, hist_initial, 
-        #                                     parameters_to_calibrate, observed_series.values[:T_hist + 1], 
-        #                                     t_train = T_hist, rounds=ROUNDS, n_sim_per_round=NUM_SIM_PER_ROUND)
+    if not "load_nre" in argv:
+        for i, s in enumerate(statistics_versions):
+            final_ratio = train_nre_statistics_rounds(priors, s, parameters_to_calibrate, observed_series,                 
+                                            t_train = T_hist, features_kyes=keys, country=country, rounds=ROUNDS, n_sim_per_round=NUM_SIM_PER_ROUND, num_calibrations=NUM_CALIBRATION_DATES)
             
-        #     statistics_nres.append(final_ratio)
+            statistics_nres.append(final_ratio)
 
     ### append NN-based posteriors
-    if not "load_posteriors" in argv:
+    if not "load_npe" in argv:
         print("Training NN-based NPEs...")
         for nn, transform, name, key_list, cal_num in zip(nns, nn_transforms, nn_versions, nn_keys, nn_cal_nums):
             print(f"\nTraining NPE with NN embedding: {name}")
@@ -1001,11 +1003,13 @@ if __name__ == "__main__":
             # post = train_npe_nn(priors, priors_samples, transform(raw), nn)
             nn_posteriors.append(post)
 
-        # print("Training NN-based NREs...")
-        # for nn, transform, name, key_list, cal_num in zip(nns, nn_transforms, nn_versions, nn_keys, nn_cal_nums):
-        #     print(f"\nTraining NRE with NN embedding: {name}")
-        #     post, posteriors = train_nre_nn_batched(priors, nn, transform, parameters_to_calibrate, observed_series, T_hist, key_list, country, rounds=ROUNDS, n_sim_per_round=NUM_SIM_PER_ROUND, num_calibrations=cal_num)
-        #     nn_nres.append(post)
+    if not "load_nre" in argv:
+
+        print("Training NN-based NREs...")
+        for nn, transform, name, key_list, cal_num in zip(nns, nn_transforms, nn_versions, nn_keys, nn_cal_nums):
+            print(f"\nTraining NRE with NN embedding: {name}")
+            post = train_nre_nn_batched(priors, nn, transform, parameters_to_calibrate, observed_series, T_hist, key_list, country, rounds=ROUNDS, n_sim_per_round=NUM_SIM_PER_ROUND, num_calibrations=cal_num)
+            nn_nres.append(post)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -1025,18 +1029,19 @@ if __name__ == "__main__":
 
     if "pp" in argv:
         ### pairplots for statistics-based NPE
+
         for p, s in zip(statistics_posteriors, statistics_versions):
-            pplot_stat(p, hist_params, filename = "npe_ " + ",".join(to_short_names(s)))
+            pplot_stat(p, hist_params, filename = "npe_ " + ",".join(to_short_names(s)) + f"_seed_{seed_value}")
 
         for r, s in zip(statistics_nres, statistics_versions):
-            pplot_stat(r, hist_params, filename = "nre_ " + ",".join(to_short_names(s)))
+            pplot_stat(r, hist_params, filename = "nre_ " + ",".join(to_short_names(s)) + f"_seed_{seed_value}")
 
         for p, transform, name in zip(nn_posteriors, nn_transforms, nn_versions):
-            pplot_stat(p, hist_params, filename = f"nn_npe_{name}")
+            pplot_stat(p, hist_params, filename = f"nn_npe_{name}" + f"_seed_{seed_value}")
 
 
         for r, transform, name in zip(nn_nres, nn_transforms, nn_versions):
-            pplot_stat(r, hist_params, filename = f"nn_nre_{name}")
+            pplot_stat(r, hist_params, filename = f"nn_nre_{name}" + f"_seed_{seed_value}")
 
     if "ppc" in argv:
         ### for statistics
@@ -1082,7 +1087,7 @@ if __name__ == "__main__":
 
     ### validation batches:
     num_prior_samples = 1000
-    num_posterior_samples = 4000
+    num_posterior_samples = 1000
 
     if not "load_validation" in argv:
         theta, sim_data = gen_batch(
@@ -1168,6 +1173,23 @@ if __name__ == "__main__":
                 filename=f"sweep_posterior_medians_stat_{','.join(to_short_names(s))}_from_posterior_{posterior_draws}_{timestamp}.png"
             )
 
+        for r, s in zip(statistics_nres, statistics_versions):
+            print(f"Running sweep for statistics embedding: {','.join(to_short_names(s))}")
+            sweep_posterior(
+                posterior=r, 
+                bounds=bounds, 
+                sweep_data_x=sweep_data,
+                sweep_data_theta=sweep_theta_values,
+                theta_base=theta_base,
+                parameters_to_calibrate=parameters_to_calibrate, 
+                ### x is four dim: (sim_per_point, num_calibrations, len(keys), T_hist + 1)
+                x_transform=lambda x: torch.stack([torch.tensor(compute_statistics_dict(batch, s), dtype=torch.float32) for batch in unrol_cal_dates(x).cpu().numpy()], dim=0).to(r.device),
+                sim_per_point=sim_per_point,
+                points_per_dim=points_per_dim,
+                posterior_draws=posterior_draws,
+                filename=f"sweep_posterior_medians_stat_{','.join(to_short_names(s))}_from_NRE_{posterior_draws}_{timestamp}.png"
+            )
+
         for p, transform, name in zip(nn_posteriors, nn_transforms, nn_versions):
             print(f"Running sweep for NN embedding: {name}")
             sweep_posterior(
@@ -1184,21 +1206,28 @@ if __name__ == "__main__":
                 filename=f"sweep_posterior_medians_nn_{name}_from_posterior_{posterior_draws}_{timestamp}.png"
             )
 
+        for r, transform, name in zip(nn_nres, nn_transforms, nn_versions):
+            print(f"Running sweep for NN embedding: {name}")
+            sweep_posterior(
+                posterior=r, 
+                bounds=bounds, 
+                sweep_data_x=sweep_data,
+                sweep_data_theta=sweep_theta_values,
+                theta_base=theta_base,
+                parameters_to_calibrate=parameters_to_calibrate, 
+                x_transform=transform[1],
+                sim_per_point=sim_per_point,
+                points_per_dim=points_per_dim,
+                posterior_draws=posterior_draws,
+                filename=f"sweep_posterior_medians_nn_{name}_from_NRE_{posterior_draws}_{timestamp}.png"
+            )
     ### validation
 
     if "coverage" in argv:
         
         for p, s in zip(statistics_posteriors, statistics_versions):
             print(f"Running coverage analysis for statistics embedding: {','.join(to_short_names(s))}")
-            coverage_analysis(
-                posterior=p,
-                bounds=bounds,
-                sim_out=sim_out,
-                theta_draws=theta_draws,
-                parameters_to_calibrate=parameters_to_calibrate,
-                x_transform=lambda x: torch.stack([torch.tensor(compute_statistics_dict(batch, s), dtype=torch.float32) for batch in unrol_cal_dates(x).cpu().numpy()], dim=0).to(p.device),
-                filename=f"coverage_stat_{','.join(to_short_names(s))}_from_posterior_{num_posterior_samples}_{timestamp}.png"
-            )
+            
 
     if "sbc" in argv:
 
@@ -1251,7 +1280,57 @@ if __name__ == "__main__":
             
             plt.savefig(f"pngs/sbc_cdf_nn_{name}_from_prior_{num_prior_samples}_from_posterior_{num_posterior_samples}_{timestamp}.png")
             plt.close()
-        
+    
+        for r, transform, name in zip(nn_nres, nn_transforms, nn_versions):
+            print(f"Running SBC for NN embedding: {name}")
+            theta_transform, x_transform, x_o_transform = transform
+
+            xs = x_transform(sim_out).flatten(start_dim=1)
+            xs = xs[::sim_out.shape[1], :]
+            theta, xs = remove_nans_and_infs_in_x(theta_draws, xs)
+            
+            ranks, dap_samples = run_sbc(
+                thetas=theta,
+                xs=xs,
+                posterior=r,
+                num_posterior_samples=num_posterior_samples,
+                use_batched_sampling=False,
+                show_progress_bar=True,
+            )
+
+            check_stats = check_sbc(
+                ranks = ranks,
+                prior_samples=theta,
+                dap_samples=dap_samples,
+                num_posterior_samples=num_posterior_samples,
+            )
+
+            print(
+                f"SBC diagnostics [per dimension]:\nkolmogorov-smirnov p-values: {check_stats['ks_pvals'].numpy()}"
+            )
+            print(f"- c2st accuracies: {check_stats['c2st_ranks'].numpy()}")
+            print(f"- c2st accuracies: {check_stats['c2st_dap'].numpy()}")
+
+            fig, axes = sbc_rank_plot(
+                ranks = ranks,
+                num_posterior_samples=num_posterior_samples,
+                plot_type="hist",
+                parameter_labels=parameters_to_calibrate
+            )
+            
+            plt.savefig(f"pngs/sbc_hist_nn_nre_{name}_from_prior_{num_prior_samples}_from_posterior_{num_posterior_samples}_{timestamp}.png")
+            plt.close()
+
+            fig, axes = sbc_rank_plot(
+                ranks = ranks,
+                num_posterior_samples=num_posterior_samples,
+                plot_type="cdf",
+                parameter_labels=parameters_to_calibrate
+            )
+            
+            plt.savefig(f"pngs/sbc_cdf_nn_nre_{name}_from_prior_{num_prior_samples}_from_posterior_{num_posterior_samples}_{timestamp}.png")
+            plt.close()
+
         for p, s in zip(statistics_posteriors, statistics_versions):
             name = ",".join(to_short_names(s))
 
@@ -1314,6 +1393,67 @@ if __name__ == "__main__":
             plt.savefig(f"pngs/sbc_cdf_nn_{name}_from_prior_{num_prior_samples}_from_posterior_{num_posterior_samples}_{timestamp}.png")
             plt.close()
 
+        for r, s in zip(statistics_nres, statistics_versions):
+            name = ",".join(to_short_names(s))
+
+            ### sim out: (sim_per_point, num_calibrations, len(keys), T_hist + 1)
+            print(f"Running SBC for statistics embedding: {s}")
+
+            # to_keep = torch.arange(0, sim_out.shape[0], step=sim_out.shape[1], dtype=torch.int32)
+            xs = unrol_cal_dates(sim_out)
+            xs = xs.cpu().numpy()
+            
+            sbc_in = torch.zeros(sim_out.shape[0], sim_out.shape[2], len(s)) ### (num_prior_samples * num_calibrations, len(keys), len(statistics))
+            for i in range(sbc_in.shape[0]):
+                stat_i = compute_statistics_dict(xs[i * sim_out.shape[1], :, :], s)
+                sbc_in[i, :, :] = torch.tensor(stat_i, dtype=torch.float32)
+            
+            sbc_in = sbc_in.flatten(start_dim=1)
+            
+            theta, sbc_in = remove_nans_and_infs_in_x(theta, sbc_in)
+            sbc_in = sbc_in.to(r.device)
+
+            ranks, dap_samples = run_sbc(
+                thetas=theta,
+                xs=sbc_in,
+                posterior=r,
+                num_posterior_samples=num_posterior_samples,
+                use_batched_sampling=False,
+                show_progress_bar=True,
+            )
+
+            check_stats = check_sbc(
+                ranks = ranks,
+                prior_samples=theta,
+                dap_samples=dap_samples,
+                num_posterior_samples=num_posterior_samples,
+                )
+
+            print(
+                f"SBC diagnostics [per dimension]:\nkolmogorov-smirnov p-values: {check_stats['ks_pvals'].numpy()}"
+            )
+            print(f"- c2st accuracies: {check_stats['c2st_ranks'].numpy()}")
+            print(f"- c2st accuracies: {check_stats['c2st_dap'].numpy()}")
+
+            fig, axes = sbc_rank_plot(
+                ranks = ranks,
+                num_posterior_samples=num_posterior_samples,
+                plot_type="hist",
+                parameter_labels=parameters_to_calibrate
+            )
+            
+            plt.savefig(f"pngs/sbc_hist_nn_{name}_from_prior_{num_prior_samples}_from_NRE_{num_posterior_samples}_{timestamp}.png")
+            plt.close()
+
+            fig, axes = sbc_rank_plot(
+                ranks = ranks,
+                num_posterior_samples=num_posterior_samples,
+                plot_type="cdf",
+                parameter_labels=parameters_to_calibrate
+            )
+
+            plt.savefig(f"pngs/sbc_cdf_nn_{name}_from_prior_{num_prior_samples}_from_NRE_{num_posterior_samples}_{timestamp}.png")
+            plt.close()
 
     if "forecast" in argv:
         forecasts = {",".join(to_short_names(s)): forecast(p, final_params, final_initial, T_forecast, keys, final_calibration, country) for p, s in zip(statistics_posteriors, statistics_versions)}
