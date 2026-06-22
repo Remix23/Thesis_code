@@ -1,4 +1,5 @@
 from os import path, listdir, getcwd, environ
+import os
 from sys import argv
 from datetime import datetime, date
 from typing import Tuple
@@ -192,13 +193,15 @@ to_log_diff_torch = lambda x: torch.diff(torch.log(x), dim=-1)
 to_log = lambda x: torch.log(x)
 to_growth_rate = lambda x: torch.diff(x, dim=-1) / x[..., :-1]
 
-### x - (n_trajectories, T_hist) -> (n_trajectories, (T_hist - 1)*3) with channels log, growth rate, difference
-# we want 
-to_cnn3 = lambda x: torch.concatenate([to_log(x)[:, 1:], to_growth_rate(x), torch.diff(x, dim=-1)], dim=-1)
-# to_cnn3_channels = lambda x: np.concatenate([to_log(x)[:, 1:], to_growth_rate(x), np.diff(x)], axis=1)
+unrol_cal_dates = lambda x: x.reshape(x.shape[0] * x.shape[1], x.shape[2], x.shape[3])
 
+to_seq_x = lambda x: to_log_diff_torch(x.reshape(x.shape[0] * x.shape[1], x.shape[2], x.shape[3]))
+to_seq_theta = lambda x, n: x.repeat_interleave(n, dim=0)
+    ### take the last calibration date: (n_samples, calibration data, n feature, T)
+to_seq_x_o = lambda x: to_log_diff_torch(x[:, -1, :, :])
 
-
+to_hierarchical_x = lambda x: to_log_diff_torch(x)
+to_hierarchical_theta = lambda x, n: x
 ### input transormations for NN-based NPEs
 # x: (N_draws, N_calibration_dates, n_features, T_hist + 1)
 to_one_series = lambda x: x[:, 0, 0, :] # take the first calibration date, first run, first feature
@@ -284,7 +287,7 @@ def load_custom ():
     priors_bounds = [
         (0, 1),  # omega
         (0.001, 5),  # lambda_p
-        (0, 1),  # pi_bar
+        (0, 1.5),  # pi_bar
     ]
 
     return parameters_to_calibrate, priors_bounds
@@ -402,7 +405,7 @@ def train_npe_nn_batched (priors, nn, nn_transform, params_to_calibrate, observe
         # print(f"Unrolled batch to shape {batch.shape} for round {i + 1}/{rounds}")
 
         batch = x_transform(sim_out) # (n_samples * n_runs, n_calibration
-        theta_draws = theta_transform(theta_draws) # (n_samples * n_runs, n_parameters)
+        theta_draws = theta_transform(theta_draws, num_calibrations) # (n_samples * n_runs, n_parameters)
         
         # print(f"Transformed batch shape after NN transform: {batch.shape}")
         batch = batch.flatten(start_dim=1)
@@ -435,7 +438,7 @@ def train_nre_nn_batched (priors, nn, nn_transform, params_to_calibrate, observe
         # print(f"Unrolled batch to shape {batch.shape} for round {i + 1}/{rounds}")
 
         batch = x_transform(sim_out) # (n_samples * n_runs, n_calibration
-        theta_draws = theta_transform(theta_draws) # (n_samples * n_runs, n_parameters)
+        theta_draws = theta_transform(theta_draws, num_calibrations) # (n_samples * n_runs, n_parameters)
         
         # print(f"Transformed batch shape after NN transform: {batch.shape}")
         batch = batch.flatten(start_dim=1)
@@ -536,11 +539,11 @@ def pplot_stat (posterior, params, filename):
     quantiles = torch.quantile(posterior_samples, qs, dim=0)
 
     print(f"Parameters: {parameters_to_calibrate}")
-    print(f"Posterior mean: {"| ".join(f'{post_mean[i]:.4f}' for i, param in enumerate(parameters_to_calibrate))}")
-    print(f"Posterior std: {"| ".join(f'{post_dir[i]:.4f}' for i, param in enumerate(parameters_to_calibrate))}")
+    print(f"Posterior mean: {" | ".join(f'{post_mean[i]:.4f}' for i, param in enumerate(parameters_to_calibrate))}")
+    print(f"Posterior std: {" | ".join(f'{post_dir[i]:.4f}' for i, param in enumerate(parameters_to_calibrate))}")
     print(f"Posterior quantiles:")
     for i, q in enumerate(qs):
-        print(f"  - {q:3.0%}: {"| ".join(f'{quantiles[i, j]:.4f}' for j, param in enumerate(parameters_to_calibrate))}")
+        print(f"  - {q:3.0%}: {" | ".join(f'{quantiles[i, j]:.4f}' for j, param in enumerate(parameters_to_calibrate))}")
 
     _ = pairplot(
         posterior_samples,
@@ -550,10 +553,10 @@ def pplot_stat (posterior, params, filename):
         title = "Pairplot of the posterior samples with calibrated values"
     )
     ### store posterior samples in a csv file for later analysis
-    with open(f"posterior_stats/stats_r{ROUNDS}_n{NUM_SIM_PER_ROUND}_p{len(parameters_to_calibrate)}_{filename}.csv", "w") as f:
+    with open(f"posterior_stats/stats_{filename}.csv", "w") as f:
         np.savetxt(f, posterior_samples, delimiter=",", header=",".join(parameters_to_calibrate), comments="")
 
-    plt.savefig(f"pngs/pairplot_r{ROUNDS}_n{NUM_SIM_PER_ROUND}_p{len(parameters_to_calibrate)}_{filename}.png")
+    plt.savefig(f"pngs/pairplot_{filename}.png")
     plt.close()
 
 def ppc_plot (observed_values, sim_out_transformed, filename):
@@ -652,11 +655,16 @@ def gen_sweep_dataset (sim_per_point, points_per_dim,parameters_to_calibrate, pr
 def sweep_posterior (posterior, bounds, sweep_data_x, sweep_data_theta, theta_base, parameters_to_calibrate, x_transform, sim_per_point, points_per_dim, posterior_draws, filename):
     fig, axes = plt.subplots(1, len(theta_base), figsize=(18, 5))
 
+    sweep_out = {}
+
     for i, middle in enumerate(theta_base):
         param_name = parameters_to_calibrate[i]
         low, high = bounds[i]
         sweep_values = sweep_data_theta[i, :]
         points_out = np.zeros((len(sweep_values), 4)) ### (theta_k, mean, lower, upper) for a plot for a given parameter
+
+        cov_stats = np.zeros((len(sweep_values), 2)) ### (theta_k, coverage) for a given parameter
+
         for j, val in enumerate(sweep_values):
             theta_sweep = theta_base.clone()
             theta_sweep[i] = val
@@ -668,7 +676,7 @@ def sweep_posterior (posterior, bounds, sweep_data_x, sweep_data_theta, theta_ba
 
             sweep_x = sweep_x.flatten(start_dim=1)
 
-            sweep_x = sweep_x.to(posterior.device)
+            sweep_x = sweep_x.to("mps")
             post_samples = posterior.sample_batched((posterior_draws, ), x = sweep_x, show_progress_bars=False)
 
             ### clamp to prior
@@ -679,13 +687,15 @@ def sweep_posterior (posterior, bounds, sweep_data_x, sweep_data_theta, theta_ba
             post_samples = post_samples[:, :, i]
 
             ### Coverage:
-            # q1 = torch.quantile(post_samples, 0.05, dim=0)
-            # q3 = torch.quantile(post_samples, 0.95, dim=0)
-            # coverage = torch.mean(((val >= q1) & (val <= q3)).float()).item()
-            # # print(f"Sweep for parameter {param_name} at value {val:.4f}: 90% credible interval coverage: {coverage:.2%}")
-            # print(f"Sweep for parameter {param_name} at value {val:.4f}: 90% credible interval coverage: {coverage:.2%} (should be close to 90%)")
+            q1 = torch.quantile(post_samples, 0.05, dim=0)
+            q3 = torch.quantile(post_samples, 0.95, dim=0)
+            coverage = torch.mean(((val >= q1) & (val <= q3)).float()).item()
+            # print(f"Sweep for parameter {param_name} at value {val:.4f}: 90% credible interval coverage: {coverage:.2%}")
+            print(f"Sweep for parameter {param_name} at value {val:.4f}: 90% credible interval coverage: {coverage:.2%} (should be close to 90%)")
 
-            coverage_analysis(theta_sweep, post_samples, torch.tensor([0.05], device=post_samples.device), filename=f"coverage_{param_name}_{val:.4f}.csv")
+            cov_stats[j, 0] = val
+            cov_stats[j, 1] = coverage
+            # coverage_analysis(val, post_samples, torch.tensor([0.05], device=post_samples.device), filename=f"coverage_{param_name}_{val:.4f}.csv")
 
             ### compute sweeping, mean medians, for sim_per_point
             ### only for considered parameters dimension
@@ -703,7 +713,7 @@ def sweep_posterior (posterior, bounds, sweep_data_x, sweep_data_theta, theta_ba
         axes[i].plot(points_out[:, 0], points_out[:, 1], marker="o")
         axes[i].fill_between(points_out[:, 0], points_out[:, 2], points_out[:, 3], color="blue", alpha=0.2, label="90% credible interval")
         ### add perfect line: y = x
-        axes[i].plot([low, high], [low, high], color="green", linestyle="dashed", linewidth=2, label="Perfect forecast")
+        axes[i].plot([low, high], [low, high], color="green", linestyle="dashed", linewidth=2, label="Perfect identification")
             
         ### x_limits
         axes[i].set_xlim(low, high)
@@ -714,36 +724,74 @@ def sweep_posterior (posterior, bounds, sweep_data_x, sweep_data_theta, theta_ba
         axes[i].set_ylabel(f"Mean of the medians of posterior samples for {param_name}")
         axes[i].legend()
 
+        ### store sweep results:
+        sweep_out[param_name] = {
+            "sweep_values": points_out[:, 0],
+            "median_means": points_out[:, 1],
+            "lower_bounds": points_out[:, 2],
+            "upper_bounds": points_out[:, 3],
+            "coverage_90": cov_stats[:, 1]
+        }
+
     plt.suptitle(f"Sweep of posterior medians for each parameter with {posterior_draws} posterior samples and {sim_per_point} simulations per point")
     plt.savefig(f"pngs/{filename}")
     plt.close()
 
+    ### save sweep results to a pickle file
+    with open(f"sweep_results/{filename}.pkl", "wb") as f:
+        pickle.dump(sweep_out, f)
 
 def coverage_analysis (theta_true, posterior_samples, levels : torch.Tensor, filename: str | None = None):
-    ### posterior_samples: (n_samples, n_parameters)
-    ### theta_true: (n_parameters,)
-    n_samples, n_parameters = posterior_samples.shape
+    ### posterior_samples:(post_sample, sim_per_point, n_parameters)
+    ### theta_true: (n_sim_per_point, n_parameters, )
+    n_samples, n_sim_per_point, n_parameters = posterior_samples.shape
+
+    assert theta_true.shape[0] == n_sim_per_point, "Number of true parameter samples must match number of generated samples."
     coverage_results = {}
+    medians = torch.median(posterior_samples, dim=0).values # (sim_per_point, n_parameters)
+    lower = torch.quantile(posterior_samples, levels, dim=0) # (n_levels, sim_per_point, n_parameters)
+    upper = torch.quantile(posterior_samples, 1 - levels, dim=0) # (n_levels, sim_per_point, n_parameters)
 
-    theta_true = theta_true.reshape(1, -1) # (1, n_parameters)
+    coverage = torch.mean(((theta_true >= lower) & (theta_true <= upper)).float(), dim=1) # (n_levels, n_paremeters)
+    coverage = coverage.cpu() # (n_levels, n_parameters)
+    cov_out = torch.zeros((len(levels), n_parameters, 3)) # (n_levels, n_parameters, 3) -> (level, parameter, [lower_bound, upper_bound, coverage])
 
-    lower = torch.quantile(posterior_samples, levels, dim=0) # (n_levels, n_parameters)
-    upper = torch.quantile(posterior_samples, 1 - levels, dim=0) # (n_levels, n_parameters)
 
-    coverage = torch.mean(((theta_true >= lower) & (theta_true <= upper)).float(), dim=0) # (n_parameters,)
+    ### pooled statistics
+    mean_median = torch.mean(medians, dim=0).cpu().numpy() # (n_parameters, )
+    std_median = torch.std(medians, dim=0).cpu().numpy() # (n_parameters, )
+    mean_interval_width = torch.mean(upper - lower, dim=1).cpu().numpy() # (n_levels, n_parameters)
 
+    ### 95% CI for the coverage
+    lower = lower.cpu().numpy()
+    upper = upper.cpu().numpy()
+    print(f"Post median: {" | ".join(f'{x:2.4f} ({y:2.4f})' for x, y in zip(mean_median, std_median))}")
+
+    print(f"Mean interval width: {" | ".join(f'{x:2.4f}' for x in mean_interval_width[0])}")
+
+    levels = levels.cpu().numpy()
+    coverage = coverage.numpy()
+
+    # print (f"Median and confidence intervals for {n_samples} posterior samples and {n_sim_per_point} simulations per point:")
+    # for i, level in enumerate(levels):
+    #     print(f"  - {(1 - 2 * level):3.0%} credible interval: mean median: {" | ".join(f'{x:2.4f} ({y:2.4f} - {z:2.4f})' for (x, y, z) in zip(m_m.numpy(), m_l[i, :].numpy(), m_u[i, :].numpy()))}")
+
+    print(f"Coverage analysis for {n_samples} posterior samples and {n_sim_per_point} simulations per point:")
     for i, level in enumerate(levels):
-        coverage_results[level] = coverage[i].item()
+        print(f"  - {(1 - 2 * level):3.0%} credible interval coverage: {" | ".join(f'{x:2.2%}' for x in coverage[i, :])} (should be close to {(1 - 2 * level):3.0%})")
+        coverage_results[f"{(1 - 2 * level):3.0%}"] = coverage[i, :]
 
     if filename is not None:
-        with open(filename, "w") as f:
-            f.write("Level,Coverage\n")
-            for level in levels:
-                f.write(f"{level:.2%},{coverage_results[level]:.2%}\n")
-        print(f"Saved coverage results to {filename}")
-
-    return coverage_results
-
+        with open(f"cov_results/{filename}.pkl", "wb") as f:
+            pickle.dump({
+                "coverage_results": coverage_results,
+                "mean_median": mean_median,
+                "std_median": std_median,
+                "mean_interval_width": mean_interval_width,
+                "true" : theta_true.cpu().numpy(),
+                "levels": levels
+            }, f)
+    return coverage
 
 def forecast (posterior, final_params, final_initial, t_forecast, keys, calibration_date, country):
 
@@ -755,25 +803,25 @@ def forecast (posterior, final_params, final_initial, t_forecast, keys, calibrat
 
     return out.mean(axis=0)
 
-def plot_forecasts (forecasts : dict[str, np.ndarray], realized_future, parameters_to_calibrate, bounds, keys, country):
-    fig, axs = plt.subplots(2, len(keys) // 2 + len(keys) % 2, figsize=(18, 12))
+def plot_forecasts (forecasts : dict[str, np.ndarray], realized_future, keys):
+    fig, axs = plt.subplots(2, len(keys) // 2 + len(keys) % 2, figsize=(18, 12), sharex="all")
     for i, key in zip(range(len(keys)), keys):
         ax = axs[np.unravel_index(i, axs.shape)]
-        ax.plot(range(1, T_forecast + 1), realized_future[key], label="Real " + key, color="black")
+        ax.plot(range(T_forecast + 1), realized_future[key], label="Real " + key, color="black")
         rolling_rsmfes = {}
         print(f"\nForecast comparison for {key}:")
         for version, forecast in forecasts.items():
-            rmsfe = compute_rmsfes(forecast[i, 1:], realized_future[key].values)
+            rmsfe = compute_rmsfes(forecast[i, :], realized_future[key].values)
             rolling_rsmfes[version] = rmsfe
             print(f"RMSFE of {version} forecast: {rmsfe[-1]:.4f}")
-            ax.plot(range(1, T_forecast + 1), forecast[i, 1:], label=f"{version} ")
+            ax.plot(range(T_forecast + 1), forecast[i, :], label=f"{version} ")
         
-        ax.set_xticks(range(1, T_forecast + 1), realized_future["date"].dt.strftime("%Y-%m").values, rotation=45)
-        ax.set_title(f"Real {key}")
+        ax.set_xticks(range(T_forecast + 1), realized_future["date"].dt.strftime("%Y-%m").values, rotation=45)
+        ax.set_title(key)
         ax.set_xlabel("Time (quarters)")
         ax.set_ylabel(f"{key} value")
-        ax.legend()
-    plt.savefig(f"pngs/forecast_comparison_p{', '.join(parameters_to_calibrate)}_bounds{', '.join(str(b) for b in bounds)}.png")
+    plt.legend(loc = "best")
+    plt.savefig(f"pngs/forecast_comparison_seed_{seed_value}.png")
     plt.show()
     return {}
 
@@ -781,6 +829,31 @@ def compute_rmsfes (forecast, realized):
     rolling_differences = [(forecast[:i] - realized[:i])**2 for i in range(1, len(forecast) + 1)]
     means = np.array(list(map(np.mean, rolling_differences)))
     return np.sqrt(means)
+
+def contruct_nn_lists (loaded_nn_posteriors, loaded_nn_nres):
+    nns = []
+    nns_transforms = []
+    nn_post = []
+    nn_ratios = []
+
+    for key, posterior in loaded_nn_posteriors.items():
+        name = key.split("_")[1:]
+        name = "_".join(name)
+
+        match name:
+            case "seq_multivariate":
+                pass
+            case "hierarchical":
+                pass
+            case "simple_hierarchical":
+                pass
+
+    for key, nre in loaded_nn_nres.items():
+        if key.startswith("stat_"):
+            statistics_nres.append(nre)
+        elif key.startswith("nn_"):
+            nn_nres.append(nre)
+
 
 if __name__ == "__main__":
 
@@ -812,8 +885,6 @@ if __name__ == "__main__":
     nn_nres = []
     nn_transforms = []
     nn_versions = []
-    nn_keys = []
-    nn_cal_nums = []
 
     if "load_npe" in argv or "load_nre" in argv:
         post_dir = "trained_posteriors"
@@ -849,6 +920,7 @@ if __name__ == "__main__":
                 if key.startswith("stat_"):
                     statistics_posteriors.append(posterior)
                 elif key.startswith("nn_"):
+                    print(key)
                     nn_posteriors.append(posterior)
 
             print(f"[NPE] Loaded {len(statistics_posteriors)} statistics-based posteriors\n[NPE] Loaded {len(nn_posteriors)} NN-based posteriors from {posterior_name}")
@@ -891,9 +963,9 @@ if __name__ == "__main__":
 
     n = 3 # number of years to simulate -> 5 years
     T_hist = 4 * n - 1 # quaters
-    final_calibration = datetime(initial_calibration.year + NUM_CALIBRATION_DATES, 12, initial_calibration.day)
+    final_calibration = datetime(2016, 12, 31) # 2016Q4
 
-    T_forecast = 4 * 3 # 4 years forecast
+    T_forecast = 4 * 3 # 3 years forecast
     date_forecast = datetime(final_calibration.year + T_forecast // 4, final_calibration.month, final_calibration.day)
     ### real data
 
@@ -913,10 +985,10 @@ if __name__ == "__main__":
 
     df = df[df["date"] >= initial_calibration]
 
-    observed_series = df[df["date"] <= final_calibration + pd.DateOffset(years=3)]
+    observed_series = df[df["date"] <= final_calibration]
 
-    realized_future = df[df["date"] > final_calibration]
-    realized_future = realized_future.head(T_forecast)
+    realized_future = df[df["date"] >= final_calibration]
+    realized_future = realized_future.head(T_forecast + 1)
 
     hist_params, hist_initial = jl.calibrate(initial_calibration.year, initial_calibration.month, initial_calibration.day, country)
 
@@ -931,15 +1003,7 @@ if __name__ == "__main__":
     hist_params["pi_bar"] = 1
     final_params["pi_bar"] = 1
 
-    unrol_cal_dates = lambda x: x.reshape(x.shape[0] * x.shape[1], x.shape[2], x.shape[3])
 
-    to_seq_x = lambda x: to_log_diff_torch(x.reshape(x.shape[0] * x.shape[1], x.shape[2], x.shape[3]))
-    to_seq_theta = lambda x: x.repeat_interleave(NUM_CALIBRATION_DATES, dim=0)
-    ### take the last calibration date: (n_samples, calibration data, n feature, T)
-    to_seq_x_o = lambda x: to_log_diff_torch(x[:, -1, :, :])
-
-    to_hierarchical_x = lambda x: to_log_diff_torch(x)
-    to_hierarchical_theta = lambda x: x
 
     if "nn" in argv:
 
@@ -968,47 +1032,45 @@ if __name__ == "__main__":
         )
 
 
-        nns += [simple_hierarchical, hierarchical] # nn_raw, nn_diff, nn_3channels, nn_rnn, nn_cnn_mixture,
-        x_transforms = [to_hierarchical_x, to_hierarchical_x] # to_seq_x, to_seq_x, to_seq_x, to_seq_x, to_seq_x,
-        theta_transforms = [to_hierarchical_theta, to_hierarchical_theta] # to_seq_theta, to_seq_theta, to_seq_theta, to_seq_theta, to_seq_theta,
-        x_o_transforms = [to_hierarchical_x, to_hierarchical_x] # to_seq_x_o, to_seq_x_o, to_seq_x_o, to_seq_x_o, to_seq_x_o,
+        nns = [simple_hierarchical, hierarchical, seq_multivariate] # nn_raw, nn_diff, nn_3channels, nn_rnn, nn_cnn_mixture,
+        x_transforms = [to_hierarchical_x, to_hierarchical_x, to_seq_x] # to_seq_x, to_seq_x, to_seq_x, to_seq_x, to_seq_x,
+        theta_transforms = [to_hierarchical_theta, to_hierarchical_theta, to_seq_theta] # to_seq_theta, to_seq_theta, to_seq_theta, to_seq_theta, to_seq_theta,
+        x_o_transforms = [to_hierarchical_x, to_hierarchical_x, to_seq_x_o] # to_seq_x_o, to_seq_x_o, to_seq_x_o, to_seq_x_o, to_seq_x_o,
         nn_transforms = list(zip(theta_transforms, x_transforms, x_o_transforms))
         # nn_transforms += [lambda x: reduction(x)[:, 1:], lambda x: to_growth_rate(reduction(x)), lambda x: x[..., 1:],  to_seq_multivariate]
-        nn_versions += ["simple_hierarchical", "hierarchical"] # "cnn_log", "cnn_growth_rate", "cnn_level",
-        nn_keys += [keys, keys] # [keys, keys, keys, keys, keys]
-        nn_cal_nums += [NUM_CALIBRATION_DATES, NUM_CALIBRATION_DATES] # [NUM_CALIBRATION_DATES, NUM_CALIBRATION_DATES, NUM_CALIBRATION_DATES, NUM_CALIBRATION_DATES, NUM_CALIBRATION_DATES]
+        nn_versions = ["simple_hierarchical", "hierarchical", "seq_multivariate"] # "cnn_log", "cnn_growth_rate", "cnn_level",
 
-        assert len(nns) == len(nn_versions) == len(nn_transforms) == len(nn_keys), "Length of nns, nn_versions, nn_transforms and nn_keys must be the same"
+        assert len(nns) == len(nn_versions) == len(nn_transforms), "Length of nns, nn_versions, nn_transforms and nn_keys must be the same"
 
-    if not "load_npe" in argv:
+    if "npe" in argv:
 
         for i, s in enumerate(statistics_versions):
             final_posterior = train_npe_statistics_rounds(priors, s, parameters_to_calibrate, observed_series,                 
                                             t_train = T_hist, features_kyes=keys, country=country, rounds=ROUNDS, n_sim_per_round=NUM_SIM_PER_ROUND, num_calibrations=NUM_CALIBRATION_DATES)
             statistics_posteriors.append(final_posterior)
         
-    if not "load_nre" in argv:
+    if "nre" in argv:
         for i, s in enumerate(statistics_versions):
             final_ratio = train_nre_statistics_rounds(priors, s, parameters_to_calibrate, observed_series,                 
                                             t_train = T_hist, features_kyes=keys, country=country, rounds=ROUNDS, n_sim_per_round=NUM_SIM_PER_ROUND, num_calibrations=NUM_CALIBRATION_DATES)
-            
+        
             statistics_nres.append(final_ratio)
 
     ### append NN-based posteriors
-    if not "load_npe" in argv:
+    if "npe" in argv:
         print("Training NN-based NPEs...")
-        for nn, transform, name, key_list, cal_num in zip(nns, nn_transforms, nn_versions, nn_keys, nn_cal_nums):
+        for nn, transform, name in zip(nns, nn_transforms, nn_versions):
             print(f"\nTraining NPE with NN embedding: {name}")
-            post = train_npe_nn_batched(priors, nn, transform, parameters_to_calibrate, observed_series, T_hist, key_list, country, rounds=ROUNDS, n_sim_per_round=NUM_SIM_PER_ROUND, num_calibrations=cal_num   )
+            post = train_npe_nn_batched(priors, nn, transform, parameters_to_calibrate, observed_series, T_hist, keys, country, rounds=ROUNDS, n_sim_per_round=NUM_SIM_PER_ROUND, num_calibrations=NUM_CALIBRATION_DATES   )
             # post = train_npe_nn(priors, priors_samples, transform(raw), nn)
             nn_posteriors.append(post)
 
-    if not "load_nre" in argv:
+    if "nre" in argv:
 
         print("Training NN-based NREs...")
-        for nn, transform, name, key_list, cal_num in zip(nns, nn_transforms, nn_versions, nn_keys, nn_cal_nums):
+        for nn, transform, name in zip(nns, nn_transforms, nn_versions):
             print(f"\nTraining NRE with NN embedding: {name}")
-            post = train_nre_nn_batched(priors, nn, transform, parameters_to_calibrate, observed_series, T_hist, key_list, country, rounds=ROUNDS, n_sim_per_round=NUM_SIM_PER_ROUND, num_calibrations=cal_num)
+            post = train_nre_nn_batched(priors, nn, transform, parameters_to_calibrate, observed_series, T_hist, keys, country, rounds=ROUNDS, n_sim_per_round=NUM_SIM_PER_ROUND, num_calibrations=NUM_CALIBRATION_DATES)
             nn_nres.append(post)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1069,27 +1131,27 @@ if __name__ == "__main__":
                 real_data_ten = observed_series[observed_series["date"] >= cal_date].iloc[:T_hist + 1, 1:].values.T
                 
                 trajectories = np.array([run_monte_carlo(rep_parameters(hist_params, parameters_to_calibrate, sample.numpy()), hist_initial, T_hist, num_simulations=NUM_RUNS_PER_DRAW, calibration_date=initial_calibration, keys = keys, country=country) for sample in samples])
-                file_name = f"pngs/ppc_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_p{len(parameters_to_calibrate)}_nn_{name}.png"
+                file_name = f"pngs/ppc_cal_{datetime.strftime(cal_date, '%Y-%m-%d')}_nn_{name}.png"
                 ppc_trajectories(real_data_ten, trajectories, file_name)
 
     if "ppc_stat" in argv:
         for p, s in zip(statistics_posteriors, statistics_versions):
             x_o = compute_statistics_dict(observed_series[keys].values[:T_hist], s)
             stats_out = np.array([compute_statistics_dict(run_monte_carlo(rep_parameters(hist_params, parameters_to_calibrate, sample.numpy()), hist_initial, T_hist, num_simulations=NUM_RUNS_PER_DRAW, calibration_date=initial_calibration, keys = keys, country=country), s) for sample in samples])
-            file_name = f"pngs/ppc_stat_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_p{len(parameters_to_calibrate)}_npe_{','.join(to_short_names(s))}.png"
+            file_name = f"pngs/ppc_stat_{datetime.strftime(cal_date, '%Y-%m-%d')}_npe_{','.join(to_short_names(s))}.png"
             ppc_plot(x_o, stats_out, file_name)
         
         for r, s in zip(statistics_nres, statistics_versions):
             x_o = compute_statistics_dict(observed_series["real_gdp"].values[:T_hist], s)
             stats_out = np.array([compute_statistics_dict(run_monte_carlo(rep_parameters(hist_params, parameters_to_calibrate, sample.numpy()), hist_initial, T_hist, num_simulations=NUM_RUNS_PER_DRAW, calibration_date=initial_calibration, keys = keys, country=country), s) for sample in samples])
-            file_name = f"pngs/ppc_stat_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_p{len(parameters_to_calibrate)}_nre_{','.join(to_short_names(s))}.png"
+            file_name = f"pngs/ppc_stat_{datetime.strftime(cal_date, '%Y-%m-%d')}_nre_{','.join(to_short_names(s))}.png"
             ppc_plot(x_o, stats_out, file_name)
 
     ### validation batches:
     num_prior_samples = 1000
     num_posterior_samples = 1000
 
-    if not "load_validation" in argv:
+    if "gen_val" in argv:
         theta, sim_data = gen_batch(
             calibration_date=FIRST_CALIBRATION_DATE,
             num_calibrations=NUM_CALIBRATION_DATES,
@@ -1102,7 +1164,7 @@ if __name__ == "__main__":
             country=country, 
             force_gen=True
         )
-        with open(f"data_npz/validation/validation_{country}_p_{','.join(parameters_to_calibrate)}_b_{','.join([f'{low:.2f}_{high:.2f}' for low, high in bounds])}_prior_{num_prior_samples}_posterior_{num_posterior_samples}_c{NUM_CALIBRATION_DATES}_{timestamp}.pkl", "wb") as f:
+        with open(f"data_npz/validation/validation_{country}_p_{','.join(parameters_to_calibrate)}_b_{','.join([f'{low:.2f}_{high:.2f}' for low, high in bounds])}_prior_{num_prior_samples}_c{NUM_CALIBRATION_DATES}_{timestamp}.pkl", "wb") as f:
             pickle.dump({"theta": theta, "sim_data": sim_data}, f)
 
     else:
@@ -1132,18 +1194,18 @@ if __name__ == "__main__":
     sim_out = sim_out.to("mps")
     print(f"Validation batch loaded with {theta_draws.shape[0]} parameter draws and simulation output of shape {sim_out.shape}")
 
-    if "sweep" in argv or "load_sweep" in argv:
+    if "sweep" in argv or "gen_sweep" in argv:
 
-        sim_per_point = 25
-        points_per_dim = 9
-        posterior_draws = 4000
+        sim_per_point = 200
+        points_per_dim = 7
+        posterior_draws = 1000
 
-        if "load_sweep" in argv:
+        if not "gen_sweep" in argv:
             sweep_data, sweep_theta_values, _parameters_to_calibrate, _bounds, sim_per_point, points_per_dim, _starting_calibration_date, theta_base = load_sweep_data()
         else:
             sweep_theta_values, theta_base, sweep_data = gen_sweep_dataset(sim_per_point, points_per_dim, parameters_to_calibrate=parameters_to_calibrate, priors_bounds=bounds, priors=priors, country=country, keys=keys)
 
-            with open(f"data_npz/sweep/sweep_{country}_p_{','.join(parameters_to_calibrate)}_b_{','.join([f'{low:.2f}_{high:.2f}' for low, high in bounds])}_sim_{sim_per_point}_prior_{num_prior_samples}_posterior_{num_posterior_samples}_c{NUM_CALIBRATION_DATES}_{timestamp}.pkl", "wb") as f:
+            with open(f"data_npz/sweep/sweep_{country}_per_{sim_per_point}_points_{points_per_dim}_{timestamp}.pkl", "wb") as f:
                 pickle.dump({
                     "sweep_data": sweep_data,
                     "sweep_theta_values": sweep_theta_values,
@@ -1183,7 +1245,7 @@ if __name__ == "__main__":
                 theta_base=theta_base,
                 parameters_to_calibrate=parameters_to_calibrate, 
                 ### x is four dim: (sim_per_point, num_calibrations, len(keys), T_hist + 1)
-                x_transform=lambda x: torch.stack([torch.tensor(compute_statistics_dict(batch, s), dtype=torch.float32) for batch in unrol_cal_dates(x).cpu().numpy()], dim=0).to(r.device),
+                x_transform=lambda x: torch.stack([torch.tensor(compute_statistics_dict(batch, s), dtype=torch.float32) for batch in unrol_cal_dates(x).cpu().numpy()], dim=0).to("mps"),
                 sim_per_point=sim_per_point,
                 points_per_dim=points_per_dim,
                 posterior_draws=posterior_draws,
@@ -1223,23 +1285,107 @@ if __name__ == "__main__":
             )
     ### validation
 
-    if "coverage" in argv:
+    if "recovery" in argv:
+        true_theta = torch.tensor([hist_params[param] for param in parameters_to_calibrate], device="mps", dtype=torch.float32)
         
+        if not path.exists(f"recovery_data.pkl"):
+            _, xs = gen_batch(
+                calibration_date=FIRST_CALIBRATION_DATE,
+                num_calibrations=NUM_CALIBRATION_DATES,
+                T=T_hist,
+                priors=priors,
+                params_to_calibrate=parameters_to_calibrate,
+                n_samples=1000,
+                n_runs=1,
+                keys=keys,
+                country=country,
+                sample_theta=true_theta, 
+                force_gen=True
+            )
+            with open("recovery_data.pkl", "wb") as f:
+                pickle.dump({"x": xs}, f)
+
+        else:
+            with open("recovery_data.pkl", "rb") as f:
+                data = pickle.load(f)
+                xs = data["x"]
+        xs = xs.squeeze(2)
+        xs = xs.to("mps")
+
+        ### the first corresponds to 95% CI.
+        levels = torch.tensor([0.025, 0.05, 0.1, 0.25], device="mps", dtype=torch.float32)
+        true_theta = true_theta.repeat((1000, 1))
+        
+        for p, transform, name in zip(nn_posteriors, nn_transforms, nn_versions):
+            print(f"Running recovery analysis for NPE with NN embedding: {name}")
+            theta_transform, x_transform, x_o_transform = transform
+
+            x = x_transform(xs).flatten(start_dim=1)
+
+            if x.shape[0] != 1000:
+                x = x[::NUM_CALIBRATION_DATES, :]
+            post_samples = p.sample_batched((1000, ), x = x, show_progress_bars=False)
+
+            _ = coverage_analysis(true_theta, post_samples, levels, filename=f"coverage_nn_{name}_{timestamp}")
+
+        for r, transform, name in zip(nn_nres, nn_transforms, nn_versions):
+            print(f"Running recovery analysis for NRE with NN embedding: {name}")
+            theta_transform, x_transform, x_o_transform = transform
+
+            x = x_transform(xs).flatten(start_dim=1)
+
+            if x.shape[0] != 1000:
+                x = x[::NUM_CALIBRATION_DATES, :]
+
+            post_samples = r.sample_batched((1000, ), x = x, show_progress_bars=False).cpu()
+
+            _ = coverage_analysis(true_theta, post_samples, levels, filename=f"coverage_nn_nre_{name}_{timestamp}")
+
         for p, s in zip(statistics_posteriors, statistics_versions):
-            print(f"Running coverage analysis for statistics embedding: {','.join(to_short_names(s))}")
-            
+            print(f"Running recovery analysis for statistics embedding: {','.join(to_short_names(s))}")
+
+            x = torch.stack([torch.tensor(compute_statistics_dict(batch, s), dtype=torch.float32) for batch in unrol_cal_dates(xs).cpu().numpy()], dim=0).to(p.device)
+            x = x.flatten(start_dim=1)
+
+            if x.shape[0] != 1000:
+                x = x[::NUM_CALIBRATION_DATES, :]
+            post_samples = p.sample_batched((1000, ), x = x, show_progress_bars=False)
+
+            print(post_samples.shape)
+            print(true_theta.shape)
+
+            _ = coverage_analysis(true_theta, post_samples, levels, filename=f"coverage_statistics_{','.join(to_short_names(s))}_{timestamp}")
+
+        for r, s in zip(statistics_nres, statistics_versions):
+            print(f"Running recovery analysis for statistics embedding: {','.join(to_short_names(s))}")
+
+            x = torch.stack([torch.tensor(compute_statistics_dict(batch, s), dtype=torch.float32) for batch in unrol_cal_dates(xs).cpu().numpy()], dim=0).to("mps")
+            x = x.flatten(start_dim=1)
+            if x.shape[0] != 1000:
+                x = x[::NUM_CALIBRATION_DATES, :]
+            post_samples = r.sample_batched((1000, ), x = x, show_progress_bars=False).cpu()
+
+            _ = coverage_analysis(true_theta, post_samples, levels, filename=f"coverage_statistics_nre_{','.join(to_short_names(s))}_{timestamp}")
 
     if "sbc" in argv:
+
+        sbc_res = {}
+        levels = torch.tensor([0.025, 0.05], device="mps", dtype=torch.float32)
+
+        num_bins = 20
 
         for p, transform, name in zip(nn_posteriors, nn_transforms, nn_versions):
             print(f"Running SBC for NN embedding: {name}")
             theta_transform, x_transform, x_o_transform = transform
 
             xs = x_transform(sim_out).flatten(start_dim=1)
-            xs = xs[::sim_out.shape[1], :]
+
+            if xs.shape[0] != theta_draws.shape[0]:
+                xs = xs[::sim_out.shape[1], :]
+
             theta, xs = remove_nans_and_infs_in_x(theta_draws, xs)
             
-            ranks, dap_samples = run_sbc(
+            ranks, dap_samples, posterior_samples = run_sbc(
                 thetas=theta,
                 xs=xs,
                 posterior=p,
@@ -1255,6 +1401,12 @@ if __name__ == "__main__":
                 num_posterior_samples=num_posterior_samples,
             )
 
+            cov = coverage_analysis(theta, posterior_samples, levels)
+
+            sbc_res[f"npe_{name}"] = check_stats
+            sbc_res[f"npe_{name}"]["ranks"] = ranks
+            sbc_res[f"npe_{name}"]["dap_samples"] = dap_samples
+
             print(
                 f"SBC diagnostics [per dimension]:\nkolmogorov-smirnov p-values: {check_stats['ks_pvals'].numpy()}"
             )
@@ -1265,20 +1417,22 @@ if __name__ == "__main__":
                 ranks = ranks,
                 num_posterior_samples=num_posterior_samples,
                 plot_type="hist",
-                parameter_labels=parameters_to_calibrate
+                parameter_labels=parameters_to_calibrate,
+                num_bins=num_bins
             )
             
-            plt.savefig(f"pngs/sbc_hist_nn_{name}_from_prior_{num_prior_samples}_from_posterior_{num_posterior_samples}_{timestamp}.png")
+            plt.savefig(f"pngs/sbc_hist_nn_npe_{name}_from_prior_{num_prior_samples}_from_posterior_{num_posterior_samples}_{timestamp}_seed_{seed_value}.png")
             plt.close()
 
             fig, axes = sbc_rank_plot(
                 ranks = ranks,
                 num_posterior_samples=num_posterior_samples,
                 plot_type="cdf",
-                parameter_labels=parameters_to_calibrate
+                parameter_labels=parameters_to_calibrate,
+                num_bins=num_bins
             )
             
-            plt.savefig(f"pngs/sbc_cdf_nn_{name}_from_prior_{num_prior_samples}_from_posterior_{num_posterior_samples}_{timestamp}.png")
+            plt.savefig(f"pngs/sbc_cdf_nn_npe_{name}_from_prior_{num_prior_samples}_from_posterior_{num_posterior_samples}_{timestamp}_seed_{seed_value}.png")
             plt.close()
     
         for r, transform, name in zip(nn_nres, nn_transforms, nn_versions):
@@ -1286,10 +1440,13 @@ if __name__ == "__main__":
             theta_transform, x_transform, x_o_transform = transform
 
             xs = x_transform(sim_out).flatten(start_dim=1)
-            xs = xs[::sim_out.shape[1], :]
+
+            if xs.shape[0] != theta_draws.shape[0]:
+                xs = xs[::sim_out.shape[1], :]
+
             theta, xs = remove_nans_and_infs_in_x(theta_draws, xs)
             
-            ranks, dap_samples = run_sbc(
+            ranks, dap_samples, posterior_samples = run_sbc(
                 thetas=theta,
                 xs=xs,
                 posterior=r,
@@ -1305,6 +1462,13 @@ if __name__ == "__main__":
                 num_posterior_samples=num_posterior_samples,
             )
 
+            cov = coverage_analysis(theta, posterior_samples, levels)
+
+            sbc_res[f"nre_{name}"] = check_stats
+            sbc_res[f"nre_{name}"]["ranks"] = ranks
+            sbc_res[f"nre_{name}"]["dap_samples"] = dap_samples
+            sbc_res[f"nre_{name}"]["coverage"] = cov
+
             print(
                 f"SBC diagnostics [per dimension]:\nkolmogorov-smirnov p-values: {check_stats['ks_pvals'].numpy()}"
             )
@@ -1315,20 +1479,22 @@ if __name__ == "__main__":
                 ranks = ranks,
                 num_posterior_samples=num_posterior_samples,
                 plot_type="hist",
+                num_bins=num_bins,
                 parameter_labels=parameters_to_calibrate
             )
             
-            plt.savefig(f"pngs/sbc_hist_nn_nre_{name}_from_prior_{num_prior_samples}_from_posterior_{num_posterior_samples}_{timestamp}.png")
+            plt.savefig(f"pngs/sbc_hist_nn_nre_{name}_from_prior_{num_prior_samples}_from_posterior_{num_posterior_samples}_{timestamp}_seed_{seed_value}.png")
             plt.close()
 
             fig, axes = sbc_rank_plot(
                 ranks = ranks,
                 num_posterior_samples=num_posterior_samples,
                 plot_type="cdf",
+                num_bins=num_bins,
                 parameter_labels=parameters_to_calibrate
             )
             
-            plt.savefig(f"pngs/sbc_cdf_nn_nre_{name}_from_prior_{num_prior_samples}_from_posterior_{num_posterior_samples}_{timestamp}.png")
+            plt.savefig(f"pngs/sbc_cdf_nn_nre_{name}_from_prior_{num_prior_samples}_from_posterior_{num_posterior_samples}_{timestamp}_seed_{seed_value}.png")
             plt.close()
 
         for p, s in zip(statistics_posteriors, statistics_versions):
@@ -1349,9 +1515,9 @@ if __name__ == "__main__":
             sbc_in = sbc_in.flatten(start_dim=1)
             
             theta, sbc_in = remove_nans_and_infs_in_x(theta, sbc_in)
-            sbc_in = sbc_in.to(posterior.device)
+            sbc_in = sbc_in.to("mps")
 
-            ranks, dap_samples = run_sbc(
+            ranks, dap_samples, posterior_samples = run_sbc(
                 thetas=theta,
                 xs=sbc_in,
                 posterior=p,
@@ -1367,6 +1533,13 @@ if __name__ == "__main__":
                 num_posterior_samples=num_posterior_samples,
             )
 
+            cov = coverage_analysis(theta, posterior_samples, levels)
+
+            sbc_res[f"npe_{name}"] = check_stats
+            sbc_res[f"npe_{name}"]["ranks"] = ranks
+            sbc_res[f"npe_{name}"]["dap_samples"] = dap_samples
+            sbc_res[f"npe_{name}"]["coverage"] = cov    
+
             print(
                 f"SBC diagnostics [per dimension]:\nkolmogorov-smirnov p-values: {check_stats['ks_pvals'].numpy()}"
             )
@@ -1377,20 +1550,22 @@ if __name__ == "__main__":
                 ranks = ranks,
                 num_posterior_samples=num_posterior_samples,
                 plot_type="hist",
-                parameter_labels=parameters_to_calibrate
+                parameter_labels=parameters_to_calibrate,
+                num_bins=num_bins
             )
             
-            plt.savefig(f"pngs/sbc_hist_nn_{name}_from_prior_{num_prior_samples}_from_posterior_{num_posterior_samples}_{timestamp}.png")
+            plt.savefig(f"pngs/sbc_hist_npe_{name}_from_prior_{num_prior_samples}_from_posterior_{num_posterior_samples}_{timestamp}_seed_{seed_value}.png")
             plt.close()
 
             fig, axes = sbc_rank_plot(
                 ranks = ranks,
                 num_posterior_samples=num_posterior_samples,
                 plot_type="cdf",
+                num_bins=num_bins,
                 parameter_labels=parameters_to_calibrate
             )
             
-            plt.savefig(f"pngs/sbc_cdf_nn_{name}_from_prior_{num_prior_samples}_from_posterior_{num_posterior_samples}_{timestamp}.png")
+            plt.savefig(f"pngs/sbc_cdf_npe_{name}_from_prior_{num_prior_samples}_from_posterior_{num_posterior_samples}_{timestamp}_seed_{seed_value}.png")
             plt.close()
 
         for r, s in zip(statistics_nres, statistics_versions):
@@ -1413,7 +1588,7 @@ if __name__ == "__main__":
             theta, sbc_in = remove_nans_and_infs_in_x(theta, sbc_in)
             sbc_in = sbc_in.to(r.device)
 
-            ranks, dap_samples = run_sbc(
+            ranks, dap_samples, posterior_samples = run_sbc(
                 thetas=theta,
                 xs=sbc_in,
                 posterior=r,
@@ -1427,8 +1602,14 @@ if __name__ == "__main__":
                 prior_samples=theta,
                 dap_samples=dap_samples,
                 num_posterior_samples=num_posterior_samples,
-                )
+            )
 
+            cov = coverage_analysis(theta, posterior_samples, levels)
+
+            sbc_res[f"nre_{name}"] = check_stats
+            sbc_res[f"nre_{name}"]["ranks"] = ranks
+            sbc_res[f"nre_{name}"]["dap_samples"] = dap_samples
+            sbc_res[f"nre_{name}"]["coverage"] = cov
             print(
                 f"SBC diagnostics [per dimension]:\nkolmogorov-smirnov p-values: {check_stats['ks_pvals'].numpy()}"
             )
@@ -1439,21 +1620,26 @@ if __name__ == "__main__":
                 ranks = ranks,
                 num_posterior_samples=num_posterior_samples,
                 plot_type="hist",
-                parameter_labels=parameters_to_calibrate
+                parameter_labels=parameters_to_calibrate,
+                num_bins=num_bins
             )
             
-            plt.savefig(f"pngs/sbc_hist_nn_{name}_from_prior_{num_prior_samples}_from_NRE_{num_posterior_samples}_{timestamp}.png")
+            plt.savefig(f"pngs/sbc_hist_nre_{name}_from_prior_{num_prior_samples}_from_NRE_{num_posterior_samples}_{timestamp}_seed_{seed_value}.png")
             plt.close()
 
             fig, axes = sbc_rank_plot(
                 ranks = ranks,
                 num_posterior_samples=num_posterior_samples,
                 plot_type="cdf",
-                parameter_labels=parameters_to_calibrate
+                parameter_labels=parameters_to_calibrate,
+                num_bins = num_bins
             )
 
-            plt.savefig(f"pngs/sbc_cdf_nn_{name}_from_prior_{num_prior_samples}_from_NRE_{num_posterior_samples}_{timestamp}.png")
+            plt.savefig(f"pngs/sbc_cdf_nre_{name}_from_prior_{num_prior_samples}_from_NRE_{num_posterior_samples}_{timestamp}_seed_{seed_value}.png")
             plt.close()
+
+        with open(f"sbc_res/sbc_results_{country}_prior_{num_prior_samples}_post_{num_posterior_samples}_{timestamp}_seed_{seed_value}.pkl", "wb") as f:
+            pickle.dump(sbc_res, f)
 
     if "forecast" in argv:
         forecasts = {",".join(to_short_names(s)): forecast(p, final_params, final_initial, T_forecast, keys, final_calibration, country) for p, s in zip(statistics_posteriors, statistics_versions)}
@@ -1464,7 +1650,7 @@ if __name__ == "__main__":
         abm_forecast = run_monte_carlo(final_params, final_initial, T_forecast, num_simulations=100, calibration_date=final_calibration, keys=keys, country=country)
         forecasts["ABM_base"] = abm_forecast
 
-        rolling_rsmfes = plot_forecasts(forecasts, realized_future, parameters_to_calibrate, bounds, keys, country)
+        rolling_rsmfes = plot_forecasts(forecasts, realized_future, keys)
 
         print("Rolling RMSFEs:")
         for key, value in rolling_rsmfes.items():

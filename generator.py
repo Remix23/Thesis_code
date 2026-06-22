@@ -57,18 +57,8 @@ date_forecast = datetime(
     final_calibration.day,
 )
 
-before_it_data_path = path.expanduser("~/Projects/julias/BeforeIT_Modded/data")
-counter = 1
-avaible_countries = []
-for item in listdir(before_it_data_path):
-    if not path.isfile(path.join(before_it_data_path, item)) and len(item) == 2:
-        print(f"{counter}. {item}")
-        avaible_countries.append(item)
-        counter += 1
-selection = int(input("Select the country for which to generate data (enter the number): ")) - 1
 
-country = avaible_countries[selection]
-print(f"Selected country: {country}")
+country = "IT"
 
 
 hist_params, hist_initial = jl.calibrate(
@@ -86,7 +76,7 @@ parameters_to_calibrate = ["omega", "lambda_p", "pi_bar"]
 priors_bounds = [
     (0, 1),  # omega
     (0.001, 5),  # lambda_p
-    (0, 1.5),  # pi_bar
+    (0, 10),  # pi_bar
 ]
 
 assert len(parameters_to_calibrate) == len(priors_bounds), "Number of parameters to calibrate must match number of prior bounds."
@@ -290,7 +280,6 @@ def sweep_prior (parameters_to_calibrate, priors_bounds, priors, country):
                 plt.plot(x_plot[k, j, :], alpha=0.5, label=f"{parameters_to_calibrate[i]} = {sweep_values[k]:.3f}")
             plt.title(f"{keys[j]}")
             plt.xlabel(f"{initial_calibration.strftime('%Y-%m-%d')}")
-            plt.ylabel(keys[j])
 
 
         plt.legend(loc="upper left")

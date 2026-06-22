@@ -1,9 +1,10 @@
 source venv/bin/activate
 
 # seeds:
-for i in {0..9}
+for i in {0..5}
 do
     num=$(($RANDOM % 100))
-    python seed_ensemble.py --seed $num
+    echo "Running analysis with seed $num"
+    printf "1\n1\n" | python analysis.py --seed $num load npe nn pp save
 # 
 done
