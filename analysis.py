@@ -86,10 +86,6 @@ def rep_parameters(parameters, parameters_to_calibrate, draw):
         sim_paramerters[param] = value
     return sim_paramerters
 
-def run_sim(parameters, initial_conditions, T, keys = ["real_gdp"]):
-    data = jl.run_simulation(parameters, initial_conditions, T, keys)
-    return np.array(data)
-
 def run_monte_carlo(parameters, initial_conditions, T, num_simulations, calibration_date , keys, country):
     data = jl.run_monte_carlo(parameters, initial_conditions, T, num_simulations, keys, calibration_date, country)
     data = np.mean(data, axis=0) # average across simulations
@@ -97,11 +93,22 @@ def run_monte_carlo(parameters, initial_conditions, T, num_simulations, calibrat
 
 def findar_p (times_series, p):
     target = times_series[p:]
-    lagged = np.array([times_series[i:-(p - i)] for i in range(p)]).T
+    lagged = np.column_stack([
+        times_series[p - lag: len(times_series) - lag]
+        for lag in range(1, p + 1)
+    ])
     ones = np.ones((lagged.shape[0], 1))
     lagged = np.hstack((ones, lagged))
     ols = np.linalg.lstsq(lagged, target, rcond=None)
     return ols[0]
+
+def forecast_ar1(coef, steps, initial_value):
+    forecast = [initial_value]
+    for _ in range(steps):
+        next_value = coef[0] + coef[1] * forecast[-1]
+        forecast.append(next_value)
+    return np.array(forecast)  
+    
 
 def gen_sample (calibration_date, theta_draws, T, params_to_calibrate, n_runs, keys, country):
     params, initial_conditions = jl.calibrate(
@@ -216,7 +223,7 @@ STATISTICS = {
     "auto_corr_2" : lambda sim_out: np.corrcoef(sim_out[:-2], sim_out[2:])[0, 1],
     "auto_corr_3" : lambda sim_out: np.corrcoef(sim_out[:-3], sim_out[3:])[0, 1],
     "ar1_coeff": lambda sim_out: findar_p(sim_out, 1)[1],
-    "ar2_coeff": lambda sim_out: findar_p(sim_out, 2)[1],
+    "ar2_coeff": lambda sim_out: findar_p(sim_out, 2)[2],
     "min": lambda sim_out: np.min(sim_out),
     "max": lambda sim_out: np.max(sim_out),
     "skewness": lambda sim_out: np.mean((sim_out - np.mean(sim_out))**3) / np.std(sim_out)**3,
@@ -265,7 +272,7 @@ def compute_statistics (sim_out):
     yearly_corr = np.corrcoef(growth_rates[:-4], growth_rates[4:])[0, 1]
     ### AR(1) coefficient of real GDP
     ar1_coeff = findar_p(growth_rates, 1)[1]
-    ar2_coeff = findar_p(growth_rates, 2)[1]
+    ar2_coeff = findar_p(growth_rates, 2)[2]
 
     mini, maxi = np.min(growth_rates), np.max(growth_rates)
     
@@ -574,20 +581,33 @@ def ppc_plot (observed_values, sim_out_transformed, filename):
 def ppc_trajectories (observed_data, sim_out_trajectories, keys, country, filename):
     n_rows= 2
     ncols= len(keys) // n_rows + len(keys) % n_rows
-    fig, axs = plt.subplots(2, len(keys) // 2 + len(keys) , figsize=(12, 4 * len(keys)))
+    fig, axs = plt.subplots(2, len(keys) // 2 + len(keys) % 2 , figsize=(12, 4 * len(keys)))
     if len(keys) == 1:
         axs = [axs]
 
     for i, key in enumerate(keys):
         row = i // ncols
         col = i % ncols
+        ax = axs[row, col]
         for sim_out in sim_out_trajectories:
-            axs[row, col].plot(sim_out[i, :], color="blue", alpha=0.1)
-        axs[row, col].plot(observed_data[key].values, color="red", label="Observed")
-        axs[row, col].set_title(f"{key} trajectories vs observed")
-        axs[row, col].legend()
+            ax.plot(sim_out[i, :], color="blue", alpha=0.1)
+        ax.plot(observed_data[key].values, color="red", label="Observed")
+        ax.set_title(f"{key}")
+        ax.legend()
     
-    plt.title(f"Posterior Predictive Check - Trajectories for {country}")
+    legend_bbox = None
+    if len(keys) % 2 != 0:
+        fig.tight_layout()
+        legend_bbox = axs[1, -1].get_position().frozen()
+        fig.delaxes(axs[1, -1])  # Remove the last empty subplot if the number of keys is odd
+    
+    handles, labels = ax.get_legend_handles_labels()
+    if legend_bbox is not None:
+        fig.legend(handles, labels, loc="center", bbox_to_anchor=legend_bbox, bbox_transform=fig.transFigure)
+    else:
+        fig.legend(handles, labels, loc="lower right")
+        fig.tight_layout()
+
     plt.savefig(filename)
     plt.close()
 
@@ -793,15 +813,34 @@ def coverage_analysis (theta_true, posterior_samples, levels : torch.Tensor, fil
             }, f)
     return coverage
 
-def forecast (posterior, final_params, final_initial, t_forecast, keys, calibration_date, country):
+### change to return all trajectories
+def forecast (posterior, full_params, initial_conditions, t_forecast, keys, calibration_date, country):
 
     posterior_samples = posterior.sample((1000, )).cpu()
-    npe_forecast_params = posterior_samples.mean(dim= 0)
-    npe_forecast_params = rep_parameters(final_params, parameters_to_calibrate, npe_forecast_params)
-    npe_forecast = jl.run_monte_carlo(npe_forecast_params, final_initial, t_forecast, 100, keys, calibration_date, country)
+    npe_forecast_params = posterior_samples.mean(dim = 0)
+    npe_forecast_params = rep_parameters(full_params, parameters_to_calibrate, npe_forecast_params)
+    npe_forecast = jl.run_monte_carlo(npe_forecast_params, initial_conditions, t_forecast, 100, keys, calibration_date, country)
     out = np.asarray(npe_forecast)
 
-    return out.mean(axis=0)
+    return out
+
+def compute_median_rsmfe (forecast, realized, T):
+    ### realized: [] 1d
+    ### forecast: (n_runs, forecast)
+    realized = np.reshape(realized, (1, -1)) # (1, forecast)
+    realized = np.repeat(realized, forecast.shape[0], axis=0)
+
+    out = np.zeros((len(T), ))
+
+    differences = (forecast - realized) ** 2
+    for i, t in enumerate(T):
+        mean_diff = np.mean(differences[:, :t], axis=1)
+        rmsfe = np.sqrt(mean_diff)
+        median = np.median(rmsfe)
+        out[i] = median
+        print(f"RMSFE at time {t}: {median:.4f}")
+
+    return out
 
 def plot_forecasts (forecasts : dict[str, np.ndarray], realized_future, keys):
     fig, axs = plt.subplots(2, len(keys) // 2 + len(keys) % 2, figsize=(18, 12), sharex="all")
@@ -811,49 +850,102 @@ def plot_forecasts (forecasts : dict[str, np.ndarray], realized_future, keys):
         rolling_rsmfes = {}
         print(f"\nForecast comparison for {key}:")
         for version, forecast in forecasts.items():
-            rmsfe = compute_rmsfes(forecast[i, :], realized_future[key].values)
+            forecast_series = np.mean(forecast, axis = 0)
+            rmsfe = compute_rmsfes(forecast_series[i, :], realized_future[key].values)
             rolling_rsmfes[version] = rmsfe
             print(f"RMSFE of {version} forecast: {rmsfe[-1]:.4f}")
-            ax.plot(range(T_forecast + 1), forecast[i, :], label=f"{version} ")
+            ax.plot(range(T_forecast + 1), forecast_series[i, :], label=f"{version} ")
         
         ax.set_xticks(range(T_forecast + 1), realized_future["date"].dt.strftime("%Y-%m").values, rotation=45)
         ax.set_title(key)
         ax.set_xlabel("Time (quarters)")
         ax.set_ylabel(f"{key} value")
-    plt.legend(loc = "best")
+
+    legend_bbox = None
+    if len(keys) % 2 != 0:
+        fig.tight_layout()
+        legend_bbox = axs[1, -1].get_position().frozen()
+        fig.delaxes(axs[1, -1])  # Remove the last empty subplot if the number of keys is odd
+    
+    handles, labels = ax.get_legend_handles_labels()
+    if legend_bbox is not None:
+        fig.legend(handles, labels, loc="center", bbox_to_anchor=legend_bbox, bbox_transform=fig.transFigure)
+    else:
+        fig.legend(handles, labels, loc="lower right")
+        fig.tight_layout()
     plt.savefig(f"pngs/forecast_comparison_seed_{seed_value}.png")
-    plt.show()
+    plt.clf()
     return {}
 
-def compute_rmsfes (forecast, realized):
-    rolling_differences = [(forecast[:i] - realized[:i])**2 for i in range(1, len(forecast) + 1)]
-    means = np.array(list(map(np.mean, rolling_differences)))
-    return np.sqrt(means)
+def prepare_forecasts_for_date (posteriors, full_observed, forecast_horizon, keys, country):
 
-def contruct_nn_lists (loaded_nn_posteriors, loaded_nn_nres):
-    nns = []
-    nns_transforms = []
-    nn_post = []
-    nn_ratios = []
+    forecasts = {}
+    #### all quarters
+    for i in range(NUM_CALIBRATION_DATES * 4):
+        cal_date = FIRST_CALIBRATION_DATE + pd.DateOffset(months=i)
+        params, initial = jl.calibrate (
+            cal_date.year, cal_date.month, cal_date.day, country
+        )
+        print(f"\nPreparing forecasts for calibration date: {cal_date.strftime('%Y-%m-%d')}")
+        forecasts[cal_date] = {}
 
-    for key, posterior in loaded_nn_posteriors.items():
-        name = key.split("_")[1:]
-        name = "_".join(name)
+        for version, posterior in posteriors.items():
+            print(f"Generating forecast using {version} posterior...")
+            f = forecast(posterior, params, initial, forecast_horizon, keys, cal_date, country)
+            forecasts[cal_date][version] = f
 
-        match name:
-            case "seq_multivariate":
-                pass
-            case "hierarchical":
-                pass
-            case "simple_hierarchical":
-                pass
+        ### compute AR(1) forecast
+        ar1_forecasts = np.zeros((100, len(keys), forecast_horizon + 1))
+        series = full_observed[full_observed["date"] <= cal_date]
+        for i, key in enumerate(keys):
+            training_series = series[key].values
+            series = np.diff(np.log(training_series))
+            coef = findar_p(series, 1)
+            f = forecast_ar1(coef, forecast_horizon, training_series[-1]).reshape(1, -1)
+            f = np.exp(np.cumsum(f, axis = -1) + np.log(training_series[-2]))
+            ar1_forecasts[:, i, :] = f.repeat(100, 0)
 
-    for key, nre in loaded_nn_nres.items():
-        if key.startswith("stat_"):
-            statistics_nres.append(nre)
-        elif key.startswith("nn_"):
-            nn_nres.append(nre)
+        forecasts[cal_date]["AR(1)"] = ar1_forecasts
 
+        ### ABM reference forecast
+        abm_forecasts = jl.run_monte_carlo(params, initial, forecast_horizon, 100, keys, cal_date, country)
+        forecasts[cal_date]["ABM"] = np.asarray(abm_forecasts)
+
+        realized_future = full_observed[full_observed["date"] >= cal_date]
+        realized_future = realized_future.head(forecast_horizon + 1)
+        _ = plot_forecasts(forecasts[cal_date], realized_future, keys)
+
+    return forecasts
+
+def compute_rmsfes (forecast, realized, ts):
+    ### forecast: (features, forecast_horizon)
+    ### realized: (features, forecast_horizon)
+    n_features = forecast.shape[0]
+    squared_errors = (forecast - realized) ** 2
+    out = np.zeros((n_features, len(ts)))
+    for i, t in enumerate(ts):
+        out[:, i] = np.mean(squared_errors[:, :t], axis=1)
+    return np.sqrt(out)
+
+def summarize_forecasts (forecasts, full_observed, keys, ts):
+    ### Compute RMSFE for each forecast and calibration date
+    forecast_horizon = max(ts)
+
+    num_forecasts_horizons = len(ts)
+    num_cal_dates = len(forecasts)
+    num_models = len(next(iter(forecasts.values())))
+    num_keys = len(keys)
+
+    rmsfes = np.zeros((num_models, num_forecasts_horizons, num_keys))
+
+    for cal_date, forecast_versions in forecasts.items():
+        realized_future = full_observed[full_observed["date"] >= cal_date].head(forecast_horizon + 1)
+        realized_future = realized_future[keys].values
+    
+        for version, forecast in forecast_versions.items():
+
+            rmsfes = compute_rmsfes(forecast[:, i, :], realized_future[key].values)
+            # rmsfe_summary[cal_date][version] = rmsfes
 
 if __name__ == "__main__":
 
@@ -966,7 +1058,6 @@ if __name__ == "__main__":
     final_calibration = datetime(2016, 12, 31) # 2016Q4
 
     T_forecast = 4 * 3 # 3 years forecast
-    date_forecast = datetime(final_calibration.year + T_forecast // 4, final_calibration.month, final_calibration.day)
     ### real data
 
     keys = [
@@ -983,9 +1074,9 @@ if __name__ == "__main__":
 
     df = pd.DataFrame({"date": np.array(quarterly_dates).flatten(), **{key: np.array(data[key]).flatten() for key in keys}})
 
-    df = df[df["date"] >= initial_calibration]
+    observed_series = df[df["date"] >= initial_calibration]
 
-    observed_series = df[df["date"] <= final_calibration]
+    observed_series = observed_series[observed_series["date"] <= final_calibration]
 
     realized_future = df[df["date"] >= final_calibration]
     realized_future = realized_future.head(T_forecast + 1)
@@ -1002,8 +1093,6 @@ if __name__ == "__main__":
 
     hist_params["pi_bar"] = 1
     final_params["pi_bar"] = 1
-
-
 
     if "nn" in argv:
 
@@ -1114,12 +1203,25 @@ if __name__ == "__main__":
             for year in range(NUM_CALIBRATION_DATES):
                 cal_year= initial_calibration.year + year
                 cal_date = datetime(cal_year, initial_calibration.month, initial_calibration.day)
-                real_data_ten = observed_series[observed_series["date"] >= cal_date].iloc[:T_hist + 1, 1:].values.T
+                param, initial = jl.calibrate(cal_year, cal_date.month, cal_date.day, country)
+                real_data_ten = df[df["date"] >= cal_date].head(T_hist + 1)
                 
-                trajectories = np.array([run_monte_carlo(rep_parameters(hist_params, parameters_to_calibrate, sample.numpy()), hist_initial, T_hist, num_simulations=NUM_RUNS_PER_DRAW, calibration_date=initial_calibration, keys = keys, country=country) for sample in samples])
-                file_name = f"pngs/ppc_r_{ROUNDS}_n{NUM_SIM_PER_ROUND}_p{len(parameters_to_calibrate)}_{','.join(to_short_names(s))}.png"
-                ppc_trajectories(real_data_ten, trajectories, file_name)
+                trajectories = np.array([run_monte_carlo(rep_parameters(param, parameters_to_calibrate, sample.numpy()), initial, T_hist, num_simulations=1, calibration_date=cal_date, keys = keys, country=country) for sample in samples])
+                file_name = f"pngs/ppc_cal_{datetime.strftime(cal_date, '%Y-%m-%d')}_{','.join(to_short_names(s))}.png"
+                ppc_trajectories(real_data_ten, trajectories, keys, country, file_name)
         
+        for r, s in zip(statistics_nres, statistics_versions):
+            samples = r.sample((100,)).cpu()
+            
+            for year in range(NUM_CALIBRATION_DATES):
+                cal_year = initial_calibration.year + year
+                cal_date = datetime(cal_year, initial_calibration.month, initial_calibration.day)
+                param, initial = jl.calibrate(cal_year, cal_date.month, cal_date.day, country)
+                real_data_ten = df[df["date"] >= cal_date].head(T_hist + 1)
+                
+                trajectories = np.array([run_monte_carlo(rep_parameters(param, parameters_to_calibrate, sample.numpy()), initial, T_hist, num_simulations=1, calibration_date=cal_date, keys = keys, country=country) for sample in samples])
+                file_name = f"pngs/ppc_cal_{datetime.strftime(cal_date, '%Y-%m-%d')}_{','.join(to_short_names(s))}.png"
+                ppc_trajectories(real_data_ten, trajectories, keys, country, file_name)
         
         ### for NN-based
         for p, transform, name in zip(nn_posteriors, nn_transforms, nn_versions):
@@ -1128,11 +1230,12 @@ if __name__ == "__main__":
             for year in range(NUM_CALIBRATION_DATES):
                 cal_year= initial_calibration.year + year
                 cal_date = datetime(cal_year, initial_calibration.month, initial_calibration.day)
-                real_data_ten = observed_series[observed_series["date"] >= cal_date].iloc[:T_hist + 1, 1:].values.T
+                param, initial = jl.calibrate(cal_year, cal_date.month, cal_date.day, country)
+                real_data_ten = df[df["date"] >= cal_date].head(T_hist + 1)
                 
-                trajectories = np.array([run_monte_carlo(rep_parameters(hist_params, parameters_to_calibrate, sample.numpy()), hist_initial, T_hist, num_simulations=NUM_RUNS_PER_DRAW, calibration_date=initial_calibration, keys = keys, country=country) for sample in samples])
+                trajectories = np.array([run_monte_carlo(rep_parameters(param, parameters_to_calibrate, sample.numpy()), initial, T_hist, num_simulations=1, calibration_date=cal_date, keys = keys, country=country) for sample in samples])
                 file_name = f"pngs/ppc_cal_{datetime.strftime(cal_date, '%Y-%m-%d')}_nn_{name}.png"
-                ppc_trajectories(real_data_ten, trajectories, file_name)
+                ppc_trajectories(real_data_ten, trajectories, keys, country, file_name)
 
     if "ppc_stat" in argv:
         for p, s in zip(statistics_posteriors, statistics_versions):
@@ -1198,7 +1301,7 @@ if __name__ == "__main__":
 
         sim_per_point = 200
         points_per_dim = 7
-        posterior_draws = 1000
+        posterior_draws = 200
 
         if not "gen_sweep" in argv:
             sweep_data, sweep_theta_values, _parameters_to_calibrate, _bounds, sim_per_point, points_per_dim, _starting_calibration_date, theta_base = load_sweep_data()
@@ -1337,7 +1440,7 @@ if __name__ == "__main__":
             if x.shape[0] != 1000:
                 x = x[::NUM_CALIBRATION_DATES, :]
 
-            post_samples = r.sample_batched((1000, ), x = x, show_progress_bars=False).cpu()
+            post_samples = r.sample_batched((200, ), x = x, show_progress_bars=False).cpu()
 
             _ = coverage_analysis(true_theta, post_samples, levels, filename=f"coverage_nn_nre_{name}_{timestamp}")
 
@@ -1363,7 +1466,7 @@ if __name__ == "__main__":
             x = x.flatten(start_dim=1)
             if x.shape[0] != 1000:
                 x = x[::NUM_CALIBRATION_DATES, :]
-            post_samples = r.sample_batched((1000, ), x = x, show_progress_bars=False).cpu()
+            post_samples = r.sample_batched((200, ), x = x, show_progress_bars=False).cpu()
 
             _ = coverage_analysis(true_theta, post_samples, levels, filename=f"coverage_statistics_nre_{','.join(to_short_names(s))}_{timestamp}")
 
@@ -1406,6 +1509,7 @@ if __name__ == "__main__":
             sbc_res[f"npe_{name}"] = check_stats
             sbc_res[f"npe_{name}"]["ranks"] = ranks
             sbc_res[f"npe_{name}"]["dap_samples"] = dap_samples
+            sbc_res[f"npe_{name}"]["coverage"] = cov
 
             print(
                 f"SBC diagnostics [per dimension]:\nkolmogorov-smirnov p-values: {check_stats['ks_pvals'].numpy()}"
@@ -1451,6 +1555,7 @@ if __name__ == "__main__":
                 xs=xs,
                 posterior=r,
                 num_posterior_samples=num_posterior_samples,
+                num_workers=8,
                 use_batched_sampling=False,
                 show_progress_bar=True,
             )
@@ -1593,6 +1698,7 @@ if __name__ == "__main__":
                 xs=sbc_in,
                 posterior=r,
                 num_posterior_samples=num_posterior_samples,
+                num_workers=8,
                 use_batched_sampling=False,
                 show_progress_bar=True,
             )
@@ -1642,16 +1748,28 @@ if __name__ == "__main__":
             pickle.dump(sbc_res, f)
 
     if "forecast" in argv:
-        forecasts = {",".join(to_short_names(s)): forecast(p, final_params, final_initial, T_forecast, keys, final_calibration, country) for p, s in zip(statistics_posteriors, statistics_versions)}
-        forecasts.update({f"nn_{name}": forecast(p, final_params, final_initial, T_forecast, keys, final_calibration, country) for p, name in zip(nn_posteriors, nn_versions)})
-        forecasts.update({f"nre_{','.join(to_short_names(s))}": forecast(r, final_params, final_initial, T_forecast, keys, final_calibration, country) for r, s in zip(statistics_nres, statistics_versions)})
-        forecasts.update({f"nn_nre_{name}": forecast(r, final_params, final_initial, T_forecast, keys, final_calibration, country) for r, name in zip(nn_nres, nn_versions)})
-        
-        abm_forecast = run_monte_carlo(final_params, final_initial, T_forecast, num_simulations=100, calibration_date=final_calibration, keys=keys, country=country)
-        forecasts["ABM_base"] = abm_forecast
 
-        rolling_rsmfes = plot_forecasts(forecasts, realized_future, keys)
+        Ts = [1, 2, 3, 4, 8, 12]
+        # for name, forecast_samples in forecasts.items():
+        #     rsmfes = np.zeros((len(Ts), len(keys)))
+        #     for i, key in enumerate(keys):
+        #         real = np.diff(np.log(realized_future[key].values))
+        #         forecast_i = np.diff(np.log(forecast_samples[:, i, :]), axis=-1)
+        #         rsmfe = compute_median_rsmfe(forecast_i, real, Ts)
+        #         rsmfes[:, i] = rsmfe
+        #         print(f"RSMFE for {name} - {key}: {rsmfe}")
+        #     np.savetxt(f"rsmfe/rsmfe_{name}_seed_{seed_value}.csv", rsmfes, delimiter=",", header=",".join(keys))
 
-        print("Rolling RMSFEs:")
-        for key, value in rolling_rsmfes.items():
-            print(f"  {key}: {value}")
+        ### for multiple calibration dates
+        posteriors= {f"stat_{','.join(to_short_names(s))}": p for p, s in zip(statistics_posteriors, statistics_versions)}
+        posteriors.update({f"nn_{name}": p for p, name in zip(nn_posteriors, nn_versions)})
+        posteriors.update({f"nre_{','.join(to_short_names(s))}": r for r, s in zip(statistics_nres, statistics_versions)})
+        posteriors.update({f"nn_nre_{name}": r for r, name in zip(nn_nres, nn_versions)})
+        forecasts = prepare_forecasts_for_date(
+            posteriors,
+            full_observed = df,
+            forecast_horizon = max(Ts),
+            keys = keys,
+            country=country
+        )
+

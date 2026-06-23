@@ -65,8 +65,8 @@ print(f"Found {len(seeds)} seeds: {seeds}")
 
 ### computing seed - ensemble statistics for NPE and NRE embeddings
 for embedding, files in npe_embeddings.items():
-    medians = np.zeros((len(files), 3))  # (n_seeds, n_statistics, n_parameters)
-    int_widths = np.zeros((len(files), 3))  # (n_seeds, n_statistics, n_parameters)
+    medians = np.zeros((len(files), 3))  # (n_seeds, n_parameters)
+    int_widths = np.zeros((len(files), 3))  # (n_seeds, n_parameters)
 
     for i, f in enumerate(files):
         df = pd.read_csv(path.join(post_dir, f))

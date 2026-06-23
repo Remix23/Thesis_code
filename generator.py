@@ -302,6 +302,9 @@ data, quarterly_dates = jl.get_real(keys, country)
 n = len(quarterly_dates)
 df = pd.DataFrame({"date": np.array(quarterly_dates).flatten(), **{key: np.array(data[key]).flatten() for key in keys}})
 
+
+df.to_csv(f"data_npz/real_data/{country}_real_data.csv", index=False)
+
 df = df[df["date"] >= initial_calibration]
 
 prior_draws, samples = gen_batch(initial_calibration, num_calibrations, T_hist, priors, parameters_to_calibrate, n_histories, n_runs, keys, country)
@@ -332,5 +335,3 @@ np.savez(
     n_runs = n_runs,
     starting_calibration_date = initial_calibration.strftime('%Y-%m-%d'),
 )
-
-df.to_csv(f"data_npz/real_data/{country}_real_data_{timestamp}.csv", index=False)

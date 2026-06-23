@@ -8,115 +8,25 @@ from os import path, listdir
 from statsmodels.tsa.ar_model import AutoReg
 from statsmodels.tsa.vector_ar.var_model import VAR
 
+
+def forecast_ar1(coef, steps, initial_value):
+    forecast = [initial_value]
+    for _ in range(steps):
+        next_value = coef[0] + coef[1] * forecast[-1]
+        forecast.append(next_value)
+    return np.array(forecast[1:])  # Exclude the initial value
+    
 ### load all posterios for seeds
-
-def select_optimal_lag_lengths(x, start_from=0, max_lag=None, min_lag=1):
-    """
-    Select optimal lag lengths for AR and VAR models using rolling
-    one-step-ahead re-estimation and average AIC/BIC.
-
-    Parameters:
-    -----------
-    x : ndarray
-        2D array of shape (n_features, n_samples)
-    max_lag : int, optional
-        Largest lag order to evaluate. Defaults to a small data-driven bound.
-    min_lag : int, optional
-        Smallest lag order to evaluate.
-
-    Returns:
-    --------
-    dict
-        Nested dictionary with the lag that minimizes AIC and BIC for AR and VAR.
-    """
-    if x.ndim != 2:
-        raise ValueError("x must be 2-dimensional")
-
-    n_features, n_samples = x.shape
-    if n_samples <= min_lag:
-        raise ValueError("x must contain more samples than min_lag")
-
-    if max_lag is None:
-        max_lag = max(min_lag, min(10, n_samples // 3))
-
-    if max_lag < min_lag:
-        raise ValueError("max_lag must be greater than or equal to min_lag")
-
-    lag_candidates = range(min_lag, min(max_lag, n_samples - 1) + 1)
-
-    def average_criteria(scores):
-        valid_scores = [score for score in scores if np.isfinite(score)]
-        if not valid_scores:
-            return np.inf
-        return float(np.mean(valid_scores))
-
-    def safe_information_criteria(result):
-        try:
-            return result.aic, result.bic
-        except Exception:
-            return None, None
-
-    ar_aic_scores = {}
-    ar_bic_scores = {}
-    for p in lag_candidates:
-        feature_aic = []
-        feature_bic = []
-        for feature_idx in range(n_features):
-            series = x[feature_idx, start_from:]
-            rolling_aic = []
-            rolling_bic = []
-            for end_idx in range(p + 2, n_samples + 1):
-                try:
-                    result = AutoReg(series[:end_idx], lags=p).fit()
-                except Exception:
-                    continue
-                aic, bic = safe_information_criteria(result)
-                if aic is None or bic is None:
-                    continue
-                rolling_aic.append(aic)
-                rolling_bic.append(bic)
-            feature_aic.append(average_criteria(rolling_aic))
-            feature_bic.append(average_criteria(rolling_bic))
-        ar_aic_scores[p] = average_criteria(feature_aic)
-        ar_bic_scores[p] = average_criteria(feature_bic)
-
-    var_aic_scores = {}
-    var_bic_scores = {}
-    for p in lag_candidates:
-        rolling_aic = []
-        rolling_bic = []
-        for end_idx in range(p + 2, n_samples + 1):
-            try:
-                result = VAR(x[:, start_from:end_idx].T).fit(p)
-            except Exception:
-                continue
-            aic, bic = safe_information_criteria(result)
-            if aic is None or bic is None:
-                continue
-            rolling_aic.append(aic)
-            rolling_bic.append(bic)
-        var_aic_scores[p] = average_criteria(rolling_aic)
-        var_bic_scores[p] = average_criteria(rolling_bic)
-
-    return {
-        "ar": {
-            "aic": min(ar_aic_scores, key=ar_aic_scores.get),
-            "bic": min(ar_bic_scores, key=ar_bic_scores.get),
-            "scores": {
-                "aic": ar_aic_scores,
-                "bic": ar_bic_scores,
-            },
-        },
-        "var": {
-            "aic": min(var_aic_scores, key=var_aic_scores.get),
-            "bic": min(var_bic_scores, key=var_bic_scores.get),
-            "scores": {
-                "aic": var_aic_scores,
-                "bic": var_bic_scores,
-            },
-        },
-    }
-
+def findar_p (times_series, p):
+    target = times_series[p:]
+    lagged = np.column_stack([
+        times_series[p - lag: len(times_series) - lag]
+        for lag in range(1, p + 1)
+    ])
+    ones = np.ones((lagged.shape[0], 1))
+    lagged = np.hstack((ones, lagged))
+    ols = np.linalg.lstsq(lagged, target, rcond=None)
+    return ols[0]
 
 ### load real data:
 data_dir = path.join(path.dirname(__file__), "data_npz", "real_data")
@@ -145,4 +55,34 @@ keys = [
 real_data = real_data[keys].dropna()
 print(real_data.head())
 
-print(select_optimal_lag_lengths(real_data.values.T, start_from=10, max_lag=10, min_lag=1))
+forecast_from = pd.to_datetime("2016-12-31")
+start_from = len(real_data[real_data.index < forecast_from])
+print(f"Starting from index {start_from} for forecasting (date: {real_data.index[start_from]})")
+time_series = real_data[real_data.index <= forecast_from].values.T
+print(f"Shape of time series: {time_series.shape}")
+realized_series = real_data[real_data.index >= forecast_from].values.T
+realized_series = np.diff(np.log(realized_series), axis=1)  # log-differenced series
+time_series = np.diff(np.log(time_series), axis=1)  # log-differenced series
+print(realized_series.shape)
+
+### AR(1) for each feature
+
+### forecast: for T = {1, 2, 3, 4, 8, 12}
+T_forecast = [1, 2, 3, 4, 8, 12]
+rmsfes = np.zeros((len(T_forecast), time_series.shape[0]))  # (n_forecast_horizons, n_features)
+
+ar1_params = []
+for i in range(time_series.shape[0]):
+    params = findar_p(time_series[i, :], 1)
+    print(f"Feature {i}: AR(1) parameters: {params[0]} + {params[1]} * x(t-1)")
+    
+    
+    forecast = forecast_ar1(params, T_forecast[-1], time_series[i, -1])
+    ### compute forecast errors
+    forecast_errors = forecast - realized_series[i, :T_forecast[-1]]
+    for j, t in enumerate(T_forecast):
+        rmsfe = np.sqrt(np.mean(forecast_errors[:t]**2))
+        rmsfes[j, i] = rmsfe
+        print(f"Feature {i}: RMSFE for T={t}: {rmsfe:.4f}")
+
+np.savetxt("rsmfe/rmsfes_ar1.csv", rmsfes, delimiter=",", header=",".join(keys), comments="")

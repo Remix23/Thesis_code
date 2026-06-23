@@ -5,12 +5,15 @@ import torch
 import numpy as np
 
 def findar_p (times_series, p):
-    target = times_series[p:]
-    lagged = np.array([times_series[i:-(p - i)] for i in range(p)]).T
-    ones = np.ones((lagged.shape[0], 1))
-    lagged = np.hstack((ones, lagged))
-    ols = np.linalg.lstsq(lagged, target, rcond=None)
-    return ols[0]
+	target = times_series[p:]
+	lagged = np.column_stack([
+		times_series[p - lag: len(times_series) - lag]
+		for lag in range(1, p + 1)
+	])
+	ones = np.ones((lagged.shape[0], 1))
+	lagged = np.hstack((ones, lagged))
+	ols = np.linalg.lstsq(lagged, target, rcond=None)
+	return ols[0]
 
 STATISTICS = {
     "mean": lambda sim_out: np.mean(sim_out),
@@ -19,8 +22,8 @@ STATISTICS = {
     "auto_corr_1" : lambda sim_out: np.corrcoef(sim_out[:-1], sim_out[1:])[0, 1],
     "auto_corr_2" : lambda sim_out: np.corrcoef(sim_out[:-2], sim_out[2:])[0, 1],
     "auto_corr_3" : lambda sim_out: np.corrcoef(sim_out[:-3], sim_out[3:])[0, 1],
-    "ar1_coeff": lambda sim_out: findar_p(sim_out, 1)[1],
-    "ar2_coeff": lambda sim_out: findar_p(sim_out, 2)[1],
+	"ar1_coeff": lambda sim_out: findar_p(sim_out, 1)[1],
+	"ar2_coeff": lambda sim_out: findar_p(sim_out, 2)[2],
     "min": lambda sim_out: np.min(sim_out),
     "max": lambda sim_out: np.max(sim_out),
     "skewness": lambda sim_out: np.mean((sim_out - np.mean(sim_out))**3) / np.std(sim_out)**3,
