@@ -1,213 +1,334 @@
-\documentclass[12pt, a4paper]{article}
-\usepackage{graphicx} % Required for inserting images
-\usepackage{setspace}
-\usepackage{geometry}
- \geometry{
- a4paper,
- total={170mm,257mm},
- left=20mm,
- top=20mm,
- }
-\usepackage{amsmath, amsfonts}
+\documentclass[12pt]{article}
+\usepackage{amsmath}
+\usepackage{multirow}
+\usepackage{adjustbox}
+\usepackage{graphicx,psfrag,epsf}
+\usepackage{enumerate}
+\usepackage{natbib}
+\usepackage{amsfonts}
+\usepackage{caption}
+\usepackage{subcaption}
+\captionsetup[subfigure]{skip=0.333\baselineskip}
+\usepackage[T1]{fontenc} 
+\renewcommand\bibsection{\section{\refname}}
 
-\title{Thesis}
-\author{Jerzy Rzeszutkowski}
-\date{April 2026}
+\usepackage{url} % not crucial - just used below for the URL 
+\usepackage{hyperref}
+% \usepackage[nottoc]{tocbibind}
 
+%\pdfminorversion=4
+% NO
+
+
+% DON'T change margins - should be 1 inch all around.
+\addtolength{\oddsidemargin}{-.5in}%
+\addtolength{\evensidemargin}{-.5in}%
+\addtolength{\textwidth}{1in}%
+\addtolength{\textheight}{1.3in}%
+\addtolength{\topmargin}{-.8in}%
+
+%\bibliographystyle{natbib}
+
+\def\spacingset#1{\renewcommand{\baselinestretch}%
+{#1}\small\normalsize} \spacingset{1}
+
+\newcommand{\thesistitle}{Your Thesis Title Goes Here}
+\newcommand{\theauthor}{First Last}
+\newcommand{\studentid}{12345678}
+\newcommand{\programme}{BSc Programme Name}
+\newcommand{\institution}{University of Amsterdam}
+\newcommand{\department}{Faculty of Economics \& Business}
+\newcommand{\supervisor}{Prof. Dr. A. Supervisor}
+\newcommand{\thesisdate}{\today}
+
+% ── Hyperref setup ────────────────────────────────────────────────────────────
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    urlcolor=blue,
+    pdftitle={\thesistitle},
+    pdfauthor={\theauthor}
+}
+
+% ══════════════════════════════════════════════════════════════════════════════
 \begin{document}
+\pagenumbering{gobble}   % no page number on title page
 
-\maketitle
-\onehalfspacing
+% ── Title page ────────────────────────────────────────────────────────────────
+\begin{titlepage}
+    \centering
 
+    % % Header image — replace 'header.jpg' with your file name
+    % \includegraphics[width=0.5 \linewidth]{logoUvA_en}\\[2em]
+
+    % Institution & programme
+    {\large \institution}\\[0.3em]
+    {\normalsize \department}\\[0.3em]
+    {\normalsize \programme}\\[2.5em]
+
+    % Title
+    \rule{\linewidth}{0.5pt}\\[0.6em]
+    {\LARGE \bfseries \thesistitle}\\[0.4em]
+    \rule{\linewidth}{0.5pt}\\[2em]
+
+    % Author block
+    {\large \theauthor}\\[0.3em]
+    {\normalsize Student ID: \studentid}\\[2.5em]
+
+    % Supervisor / second reader
+    {\small
+        \begin{tabular}{rl}
+            \textit{Supervisor:}     & \supervisor   
+        \end{tabular}
+    }\\[2.5em]
+
+    % Date
+    {\normalsize \thesisdate}
+
+    \vfill
+\end{titlepage}
+
+% ── Abstract page ─────────────────────────────────────────────────────────────
+\newpage
+\pagenumbering{arabic}
+
+\begin{abstract}
+    \noindent
+    Replace this text with your abstract. The abstract should concisely
+    summarise the research question, methodology, main findings, and
+    conclusions of your thesis. Aim for 150–250 words.
+\end{abstract}
+
+\newpage
+\spacingset{1.45} % DON'T change the spacing!
 \section{Introduction}
 Question: To what extent does Neural Posterior Estimation improve the calibration and macro economical forecasting performance of a macroeconomic Agent-Based Model relative to traditional estimation methods?
 
+In the current state of the art macro economic modeling, there are two main  
+approaches. The first one is based on Dynamic Stochastic General Equilibrium (DSGE) models, which are widely used in macroeconomics for policy analysis and forecasting. Popularized by Smets \& Wouters (2007), these models are built on microeconomic foundations and incorporate rational expectations. However, they often rely on strong assumptions and may not capture the complexity of real-world economies. 
 
-The foundation for our analysis is the work of Poledna et. al. (2023), who developed an ABM model of the Austrian economy and demonstrated its forecasting performance. Their calibration method relies on a combination of cross sectional and time series data. Where the parameters for the government actions are estimated as coefficient of AR(1) processes.
-Moreover, my main parameter of interest, the fraction of income devoted to consumption ($\psi$), is estimated from input - output tables provided by Statistik Austria. 
+The second approach, analyzed in this paper, is based on Agent-Based Models (ABMs). First used for economic modelling by Orcutt (1957), ABMs have gained popularity after the financial crisis of 2008. Presenting a more flexible framework than DSGE models, ABMs allow for the inclusion of heterogeneous agents, non-linear interactions, and emergent phenomena. Results by Farmer and Foley (2009), suggest that ABMs can provide valuable insights into economic dynamics and policy implications, especially in situations where traditional models struggle to capture the complexity of the economy. While being a promising approach, they have several weakness. Due to the bottom up design choice, ABM's often have many parameters, for which a calibration procedure is required. 
 
-Their model was extended by the Wiese et. al. (2024) paper, where they incorporated Bayesian Method developed by Dyer et. al. (2024) to calibrate some parameters. They show that this method can improve the forecasting performance of the model, especially in the short term. 
-Another application of the Dyer et. al. method is presented by Alves et. al. (2026), where they tune a labour market ABM. They choose three parameters and find that handcrafted summary statistics result in weaker posterior than NN learned ones. 
+In the beginning, researchers used point - wise calibration methods, but with growing interest in Bayesian methods and increased computational power of current computers, more and more studies resort to using approximate Bayesian procedures for parameter identification. This has been made possible by continuous development of such methods. From approximate bayesian computation (ABC), likelihood function approximations, to current state of the art approaches based on neural networks (NN) such as: neural posterior / ratio / likelihood estimation techniques (NPE, NRE, NLE respectively). Following Dyer et al. (2024) we focus on NPE and NRE approaches for parameter identification in cutting - edge macro economical ABM developed by Poledna et al. (2023). 
+
+Their model is the first ABM that can rival AR, VAR, VECM, DSGE models in out - sample forecasting and has already been extended by Wiese et al. (2024) who introduced e.g. housing market and multiple country calibration. They followed the Bayesian inference trend and used SBI techniques to identify behavioral parameters influencing firms demand predictions and production targets. We continue with SBI techniques by investigating identification of parameters in the matching procedure and inflation pass through for import prices in the aforementioned baseline ABM calibrated to the Italian economy. We  train NPE and NRE estimators on simulated hypothetical trajectories of five economical aggregates: real GDP, inflation, investment, household and government expenditure, all computed by the model, to answer the question, whether those SBI techniques can identify these parameters based on the given observables. The resulting posteriors are checked for identification using sweep coverage checks and for validation using Simulation Based Calibration (SBC; Talts et al. 2018) supplemented by Posterior Predictive Checks. Moreover, we check whether the computed posteriors can enhance forecasting performance of the model for the observables. The following chapters are organized as follows, 2nd gives on overview of macroenomical forecasting with ABM and introduces the SBI methods with diagnostics. Chapter 3 presents parameter and prior selection, implementation details, NPE and NRE algorithms, validation and forecasting approaches. The results are all methods are presented in chapter 4, followed by conclusions in chapter 5.
 
 \section{Literature review}
-In the current state of the art macro economic modelling, there are two main  
-approaches. The first one is based on Dynamic Stochastic General Equilibrium (DSGE) models, 
-which are widely used in macroeconomics for policy analysis and forecasting. Popularized by Smets and Wouters (2007), these models are built on microeconomic foundations and incorporate rational expectations.
-However, they often rely on strong assumptions and may not capture the complexity of real-world economies. 
+The development of modern macroeconomic modelling progressed from early Keynesian aggregate models to microfounded dynamic frameworks. Following the critique of policy evaluation advanced by Robert E. Lucas Jr. (1976), macroeconomics increasingly adopted models grounded in optimizing individual behavior. This evolution culminated in Dynamic Stochastic General Equilibrium (DSGE) models, which combine intertemporal optimization, rational expectations, and stochastic shocks within a general equilibrium framework. Real Business Cycle models (Kydland \& Prescott, 1982) established the foundations of this approach, while later New Keynesian DSGE models incorporated nominal rigidities and additional frictions to improve empirical performance (Smets \& Wouters, 2003). Despite their widespread use in academia and central banks, DSGE models have been criticized for their reliance on representative agents and strong rationality assumptions, which may limit their ability to capture heterogeneity, financial instability, and emergent macroeconomic phenomena (Kirman, 1992).
 
-The second approach, analyzed in this paper, is based on Agent-Based Models (ABMs). First used for economic modelling by Orcutt (1957), ABMs have gained popularity after the financial crisis of 2008. 
-Presenting a more flexible framework than DSGE models, ABMs allow for the inclusion of heterogeneous agents, non-linear interactions, and emergent phenomena.
-Results by Farmer and Foley (2009), suggest that ABMs can provide valuable insights into economic dynamics and policy implications, especially in situations where traditional models struggle to capture the complexity of the economy.
+Agent-Based Models (ABMs) emerged as an alternative computational paradigm that explicitly represents economies as systems of interacting heterogeneous agents. Drawing inspiration from complexity science and computational social science, ABMs dispense with the requirement of equilibrium and instead model aggregate outcomes as emergent properties of decentralized interactions. Early contributions such as Growing Artificial Societies (Epstein \& Axtell, 1996) demonstrated how simple behavioral rules could generate complex macro-level patterns. During the 1990s and early 2000s, ABMs gained traction through the work of researchers such as Arthur (1994), LeBaron (2006), and Tesfatsion (2006), who argued that bounded rationality, learning, and network interactions provide a more realistic representation of economic behavior than fully rational representative agents. As computational resources expanded, ABMs evolved from stylized theoretical exercises into empirically grounded tools capable of reproducing key macroeconomic regularities, including business cycles, firm-size distributions, unemployment dynamics, and financial crises.
 
-However, large ABMs often have a large number of parameters, which can make calibration and thus accurate forecasting, challenging. Traditional methods for calibrating ABMs include manual tuning, grid search, and optimization algorithms. These methods can be time-consuming and may not always yield accurate results. Recently, following the work of Grazini (2017), there has been growing interest in using Bayesian methods for calibration, which allow to estimate the (conditional) distribution of a parameter(s) of interest, instead of point estimate. They put forward three Approximate Bayesian Computation (ABC) methods for posterior estimation of parameters of ABM models. Bayesian modeling requires the knowledge of data likelihood function ($p(x|\theta)$, which is difficult to derive for large ABMs (Dyer et. al. 2024). The proposed ABC approaches to solve this problem by: (1) estimation of the likelihood function (parametric and non - parametric using e.g. kernel density approximations, which need MCMC, or similar sampler to find the posterior), (2) Likelihood free posterior estimation (Classical ABC - Grazzini et. al. 2017). All methods rely on simulation from the underlying model ($p(x|\theta)$), thus are a part of broader class of Simulation Based Inference methods (SBI). They show that posterior estimation can be beneficial for ABM calibration. It allows to capture the uncertainty in the parameters which is lost by point estimates given by previous methods, such as: Simulated Minimum Distance (SMD). SMD and similar methods produce as estimate $\hat{\theta}$ by minimalization of some loss function: $\hat{\theta} = \arg \min_{\theta \in \Theta} f(y, \theta)$, where $y$ references the observed data. Mentioned ABC methods were extended by Platt (2021), with neural network approximation to the model's likelihood function, Lux (2018, 2021) with Monte Carlo methods relying on particle filters and Papamakarios et. al. (2019) with sequential neural likelihood (SNL) estimation technique. However, those ideas result in large required simulation budget ($10^5$ for low dimensional and $10^{7+}$ for higher dimensional) due to MCMC sequential nature and require stationarity assumption for simulator output (Dyer et. al. (2024)). Addressing those issues Dryer et. al (2024) propose two discriminative SBI methods: neural posterior estimation (NPE) (Papamakarios and Murray (2016), Lueckmann et al. [2017], Greenberg et al. (2019) and neural ratio estimation (NRE)(Hermans et al. 2020) for ABM calibration. NPE (method analysed in the rest of this paper) approximates the target posterior by neural network architecture: $q_\phi(\theta  |x)$, where $\phi$ represent the trainable parameters. First used for conditional density estimation by Papamakarios and Murray (2016) with Mixture Density Network (MDN) (Bishop 1994) with fully parametrized gaussians as base components. The parameters $\phi$ are trained by backpropagation. This approach directly approximates the target (conditional) density.
+The application of ABMs to macroeconomics accelerated after the 2008 global financial crisis, which exposed limitations of equilibrium-based models in capturing systemic risk and endogenous instability. Large-scale macroeconomic ABMs, such as the Eurace and Mark models, introduced detailed representations of households, firms, banks, and labor markets, enabling researchers to study the transmission of shocks through complex economic networks (Dawid et al., 2012; Dosi et al., 2010). These models demonstrated that macroeconomic fluctuations can emerge endogenously from agent interactions rather than being driven solely by exogenous shocks. Consequently, ABMs have become increasingly important for policy analysis, stress testing, and the study of non-linear economic dynamics that are difficult to accommodate within conventional DSGE frameworks.
+A persistent challenge in agent-based macroeconomic modelling concerns empirical calibration and validation. Because ABMs generally lack tractable likelihood functions and often contain large numbers of interacting parameters, obtaining reliable parameter estimates for forecasting applications is substantially more difficult than in conventional econometric models. Early calibration approaches relied on manual tuning, grid search, and optimization-based procedures. Among the most influential methods, the Simulated Method of Moments (SMM) and related Simulated Minimum Distance (SMD) techniques calibrate model parameters by minimizing the discrepancy between simulated and empirical summary statistics (Lee \& Ingram, 1991; Grazzini \& Richiardi, 2013). More generally, these approaches produce a point estimate of the parameter vector, such that ($\hat{\theta} = \arg\min_{\theta \in \Theta} f(y,\theta)$), where (y) denotes the observed data and ($f(\cdot)$) is a suitable distance or loss function. While computationally feasible, point-estimation methods do not directly quantify parameter uncertainty and may be sensitive to the choice of calibration targets.
 
-Another option is to use Normalising Flows (NF) (Tabak and Vanden-Eijnden, 2010; Tabak and Turner, 2013; Rezende and Mohamed, 2015). It is based on transforming some base (simple) distribution ($p_U$, usually a standard normal) into the target one ($p_X$) (in \eqref{eq:nfs}, by a sequence of parametrized, invertible functions. It is based on the change of variable formula ($X = g(U) : g^{-1} = f$):
-\begin{equation} \label{eq:nfs}
-    p_X(x) = p_U(f(x)) \big| \det J_f (x) \big|
-\end{equation}
-Which can be unrolled to a composition (or flow) $f = f_n \circ \dots \circ f_2 \circ f_1$ where each $f_i $ is differentiable and invertible with $g_i = f^{-1}_i$. Thus by sampling from $U$ we can easily obtain $p_X(x)$. The functions $f_i$ are parametrized by $\phi$, and optimized by maximizing the data ($x_1, x_2, \dots, x_R \sim p_X$) likelihood under the model:
-\begin{equation} \label{eq:amortized_NPE}
-    \hat{\phi} = \arg \max_{\phi} \sum_{i = 1}^R \log q_\phi(x_i)
-\end{equation}
-NF modeling have two independent choices: the dependency structure and scalar transform. The first one specified how marginal variables of $x$ (given it is a vector) influence each other. Scalar transform dictates the way values are propagate through the network (see \eqref{eq:maf_regressive} below). It can be extended to conditional density estimation. The main approach used for NPE is based on Masked Autoregressive Flow (MAF)(Papamakarios et. al. 2017). MAF mainly specifies the autoregressive nature of the flow and is constructed using gaussian MADE (Germain et. al. 2015) blocks as the flow functions ($f_i$). MADE is a NN that approximates a joint density: $q_\phi(X_1, \dots , X_n) $ by a series of conditionals: $q_\phi(\cdot) = \prod_i^n p(x_i | x_{j < i})$ (autoregressive). It uses binary masks to compute all conditionals in a single forward pass instead of coupled neural networks. For example, for a dense layer $h = Wx + b$, a MADE would introduce a mask matrix $W$, that restrict impossible connections e.g.: $p(x_2 | x_1)$ only depends on $p(x_1)$. Thus we have a MADE dense layer: $h = (M \odot W)x + b$. With $\odot$ being element wise multiplication. MADE networks can be used for density estimation, then to compute $p(x_1, \cdots, x_n)$, we draw $\{ u_1, \cdots, u_n \}$ from some simple predefined distribution and run the network forward. However, as MAF experiments suggests, stacking these blocks can improve density estimation. In that case we can use the resulting joint distribution from one MADE block as sampling distribution for $u$'s for the next ones. 
+To address these limitations, recent research has increasingly adopted Bayesian approaches to ABM calibration. Rather than producing a single estimate, Bayesian methods infer the posterior distribution of model parameters conditional on the observed data, thereby explicitly accounting for uncertainty. However, Bayesian inference traditionally requires evaluation of the likelihood function ($p(x \mid \theta)$), which is typically unavailable for large-scale ABMs due to their complex and highly nonlinear dynamics (Dyer et al., 2024). Grazzini et al. (2017) addressed this challenge by introducing several Approximate Bayesian Computation (ABC) approaches for ABM calibration. These methods either approximate the likelihood function directly through parametric or non-parametric techniques, such as kernel density estimation combined with Markov Chain Monte Carlo (MCMC) sampling, or bypass likelihood evaluation altogether through likelihood-free posterior estimation. Despite methodological differences, all ABC approaches rely on repeated simulations from the underlying model and therefore belong to the broader class of Simulation-Based Inference (SBI) methods. Importantly, Grazzini et al. (2017) demonstrated that posterior estimation can provide richer information than traditional calibration approaches by quantifying uncertainty around parameter estimates rather than producing only a single optimal value.
 
-MAF models the conditional densities as Gaussian: $p(x_i | x_{<i}) \sim \mathcal{N}(\mu_i, \exp (\alpha_i))$, where $\mu_i$ and $\alpha_i$ depend on $x_{<i}$. Thus, given draws for $u_i \sim \mathcal{N}(0, 1)$ we can simulate (propagate) $x_i$ by: 
-\begin{equation} \label{eq:maf_regressive}
-    x_i = \mu_i + u_i \cdot \exp \alpha_i 
-\end{equation}
-The equation \eqref{eq:maf_regressive} is used to propagate both ways: sampling (draw $u$, obtain $x$) and density evaluation: given $x$ compute corresponding $u$ (invertibility). It is an example of an affine transform, and can be improved upon. Durkan et. al. () suggest to replace this step by rational - quadratic spline transform. Or more generally splines. Thus the name Neural Spline Flow (NSF)
+Subsequent work extended these ideas in several directions. Platt (2022) proposed neural-network-based approximations of model likelihoods, while Lux (2018, 2022) developed Monte Carlo approaches based on particle filtering techniques. In parallel, advances in machine learning led to the development of neural likelihood estimation methods such as Sequential Neural Likelihood (SNL) (Papamakarios et al., 2019). Although these approaches improved the scalability of likelihood-free inference, they often require extremely large simulation budgets—ranging from approximately ($10^5$) simulations for relatively low-dimensional problems to ($10^7$) or more for higher-dimensional parameter spaces—and commonly rely on assumptions such as simulator stationarity (Dyer et al., 2024). To overcome these limitations, Dyer et al. (2024) advocate discriminative SBI methods based on Neural Posterior Estimation (NPE) (Papamakarios \& Murray, 2016; Lueckmann et al., 2017; Greenberg et al., 2019) and Neural Ratio Estimation (NRE) (Hermans et al., 2020; Thomas et al. 2022, Miller et al. 2024), which seek to improve the statistical and computational efficiency of Bayesian calibration for complex agent-based models.
+
+NPE approximates the posterior ($p(\theta \mid x)$) directly using a trainable Naural Network (NN): $q_\phi(\theta \mid x)$. It development started with the work by Papamakarios \& Murray (2016) who introduced the first NPE (NPE\_A) algorithm as an parametric alternative to ABC approaches. It was based on parametrized gaussian MDN (Bishop 1994) and allowed for sequential training. Sequential training is based on splitting the simulation budget into $R$ sets: $N_1, \dots, N_R$ and iteratively updating the target approximation based on previous posterior estimates. It might be useful if the inference is based on a single observed data point. In NPE\_A importance weighting transformation was used to account for change of sampling distribution. This restricted the conditional density estimator to have a trackable probability function $q(\theta \mid x)$. Lueckmann et al. (2017) proposed (S)NPE\_B, which incorporated importance weighting directly into the training objective and introduced a calibration kernel to focus inference on simulations close to the observed data, while also allowing for more flexible prior and proposal distributions. However, this approach can suffer from increased estimator variance. A solution was introduced by Greenberg et al. (2019). Who were the first to use Normalizing Flows (NF) (Tabak \& Vanden-Eijnden, 2010; Tabak and Turner, 2013; Rezende and Mohamed, 2015) as the NN architecture and addressed limitations of (S)NPE\_B by introducing Automatic Posterior Transformation (APT), and atomic proposals. Their method ((S)NPE\_C) enabled flexible priors and proposals while maintaining stable estimation. By learning a transformed posterior that serves both as the posterior approximation and proposal distribution, (S)NPE\_C avoids analytical transformations between rounds and has been shown to be more robust and flexible than earlier (S)NPE variants, with performance comparable to or exceeding that of Sequential Neural Likelihood (SNL). However, as noted in the original APT paper (Greenberg et al. 2019) and by Durkan et al. (2020), this method can accumulate the posterior mass outside of prior bounds (what is referred as 'leakage') and can make rejection sampling time consuming (e.g. Glöckler et al. 2022). This issue was addressed by Deistler et al. (2022) with the introduction of automatic threshold based truncation of the posteriors (TSNPE). Departing from sequential developments, Dax et al. (2023) build upon the NF architecture by incorporating Flow Matching technique (Lipman et al. 2022) which uses continuous transformation instead of fixed (discrete) number of function as in standard NF.
+
+A related line of work focuses on Neural Ratio Estimation (NRE), which approximates the likelihood-to-evidence ratio and recovers the posterior through Bayes’ rule. As with NPE, both amortized and sequential variants of NRE have been developed. Early approaches formulated ratio estimation as a binary classification problem trained on simulated data (Hermans et al., 2020; Thomas et al., 2021). Durkan et al. (2020) later introduced NRE\_B, which replaced the binary objective with a contrastive classification framework, improving sample efficiency and reducing gradient variance. However, this modification sacrifices exact identification of the likelihood-to-evidence ratio, potentially introducing bias in ratio estimates. To address this limitation, Miller et al. (2024) proposed NRE\_C, which modifies the contrastive objective to restore exact ratio identification while retaining the efficiency gains of NRE\_B. Consequently, the development of NRE mirrors that of NPE: successive methodological refinements have sought to improve simulation efficiency, estimator stability, and flexibility while preserving accurate posterior inference.  
+
+Simulation based methods rely on outputs from some complex, stochastic models. Especially for ABM, resulting vector is a high dimensional, possibly multi featured, time series, thus it can be beneficial to lower the input dimension for the NPE network (e.g. Dyer et al. 2024) or incorporate some prior knowledge about output (e.g. exchangeability, dependence) as in time series. This can be done in two main approaches: selecting a set of summary statistics that describe the output, using a NN to learn informative features from data directly. The first is especially relevant for classical ABC approaches, where the algorithm mainly depends on the choice of distance function and summary statistics (e.g. Greenberg et al. 2019). Thus some literature exists for choosing and testing summary statistics (e.g. Prangle 2018). However, this method can lead to, hard to quantify, losses of information (e.g. Radev et al. 2020).
+
+The second approach relies on constructing an auxiliary NN that maps simulation output $x$ to a fixed size vector of learned statistics: $s_l(x)$. It is trained together with the density network from the same loss propagation. Many different choices exist for this network, from simple MLP for finance models (Stilmann et al. 2023), 1D CNN (Radev et al. 2020), standard CNN used for images (Greenber et al. 2019) or recurrent neural networks (Gers et al. 2000; Cho et al. 2014; Dyer et al. 2024) first used by Greenberg et al. (2017) for time series inputs. Another approach was introduced by Redev et al. (2020) with BayesFlow architecture, which is based on invertible neural networks needed for iid. simulation output.
+
+After computing the approximate joint posterior distribution using NPE or a similar methods, one would like to verify whether the result can be trustworthy. The first easy step, is to construct a pairplot, conditioning on the known data ($x_\text{obs}$). For a correct inference we would like to see a narrow posterior, with mass collapsed onto smaller region of the prior space. One can extend this method to check whether parameters from the posterior give rise to sensible simulation result - close to observed data. (named: Posterior Predictive Checks). While both are useful, they do not provide any mathematical notion of fit. One of the first formal tests was introduced by Geweke (2004). Author suggests to check whether the posterior sampler (aka. approximation) reconstructs the joint distribution by constructing a Gibbs sampler from the estimated posterior: $q(\theta |x )$ and model's likelihood function: $p(x \mid \theta)$. If the inference is correct, then the sampler will produce accurate joint samples indistinguishable from those generated directly from the prior: $p(\theta, x) = p(x \mid \theta)p(\theta)$ (we can sample $p(x, \theta)$ both components are known). Z scores can be used to perform a formal test. However, as Talts et al. (2018) note, the sampler can take a while to converge and validity of z - scores rely on this property.
+
+Cook et al. (2006) introduces another crucial idea, instead of comparing summaries of the joint distribution using z - scores, we check whether the true value behaves as a draw from its own posterior. This novel approach uses rank statistics (estimated quantiles) to perform a formal check dimension wise. If model and posterior is correct, theses statistics should have a uniform distribution. Authors suggest to formally check this by transforming resulting quantiles into z - scores by the inverse normal CDF function. Moreover, the shape of the resulting histogram can give a hint about the source of miss specification. While correct on some experiments, Talts et al. shows that this procedure can inhibit bias when using MCMC sampling. To address this issue, they introduce Simulation Based Calibration (SBC), which is also based on rank statistics, but do now assume independent draws from the posterior sampler. Instead of proving the result for quantiles (continuous uniform), they show that the rank statistics for one dimensional variable follow a discrete uniform distribution. 
+
+Another approach is based on computing empirical expected coverage statistics. Used first by Prangle et al. 2013 in the context of SBI tasks. At the basis, coverage tests ask a different question than SBC. Instead of computing rank statistics, they sample from the posterior conditioning on some $x$ generated from a ground truth parameter: $\tilde{\theta}$ and check how often does it fall inside the credible interval computed form the sample. This method allows to measure uncertainty in the approximated posterior. It provides a necessary but not a sufficient check (Lemos et al. 2023) and can be difficult to approximate practically (Deistler et al. 2022). For low dimensional parameter space one can use grid evaluation to approximate the resultant integral, but for larger space a MCMC sampler is necessary, what can be computationally expensive. Addressing this issue, Lemos et al. (2023) introduce a novel approach to coverage tests named TARP. It relies on testing whether posterior credible regions achieve their advertised coverage. They show that TARP provides a necessary and sufficient condition, while scaling better than SBC for high - dimensional parameter vectors. 
+
+More diagnostic methods has been proposed for SBI inference procedures. For NPE based on Normalizing Flows (NF) Linhart et al. (2022) introduced global and local consistency checks (also see Zhao et al. 2021) based on probability integral transform (PIT). Recent studies push local diagnostic tests further. Dey et al. (2025) introduces LADaR, which uses discrepancies between empirical and theoretical CDFs to update the conditional density approximation and Linhart et al. (2023) extends the classifier two sample test (C2ST, see Lopez - Paz \& Oquab 2016) to local evaluation of the posterior ($l$-C2ST). However, as Laplante et al. (2026) note these newer diagnostics method aren't that common in SBI workflows. Moreover, since SBI by definition a Bayesian approach, many methods exists for model selection, which can be applied to compare the baseline model to the parametrized one or compare posterior estimation methods themselves. The main tool for this problem is Bayes factor (see e.g. Kass and Raftery 1995) which compares two model's marginal likelihood. Instead of pairwise comparisons (which does not yield correct test's power for multiple comparisons) we can either perform hierarchical Bayesian inference with some priors for the models, and choose one with highest posterior probability (Posterior Model Propabilities, see e.g. Gelman et al. 2013), use information criteria such as DIC (Spiegelhalter et al. (2002)) and WAIC (Watanabe 2010) to select one out of many models or alternatively perform Cross Validation methods such as: PSI-LOO (see e.g. Jung \& Templin 2026). However, since the main inquiry of this paper is about NPE, NRE parameter recovery, we mainly focus on standard SBI techniques for posterior validation such as expected coverage sweeps and SBC.
+
+While new SBI techniques were being developed and inference procedure checks, not much research was devoted to robustness analysis, especially under model misspecification. Hermans et al.(2021) introduce the concepts of conservative and overconfident estimators based on coverage diagnostics and show that all benchmarked approaches provide non - conservative posteriors. Authors note that this issue is especially prominent with sequential methods with small training size per round and that SBI methods can be unreliable with difficult to detect issues. Their work was complemented by Cannon et al. (2022) where authors investigated SBI behaviour for misspecified models, meaning that simulator's induced $p(x \mid \theta)$ does not correspond to the true generating process of observed data $y$ for any parameter values. They found that SBI techniques fail catastrophically, producing overconfident posteriors, if the discrepancy between the model and real data is significant. Moreover, this issue is especially prominent for sequential methods with small round sizes. To address these issues, improvements have been proposed to introduce robust training for NPE and NRE. Staring from Robust NPE (RNPE) developed by Ward et al. (2022) which incorporates an error model to account for discrepancies between model's induced and real data likelihoods. Their methods was improved by Huang et al. (2023) by NPE with Robust Statistics (NPE-RS) which used Mean Minimum Distance (MMD) (Gretton et al. 2012) to regularize standard NPE loss. For ratio estimation, Delaunoy et al. (2022) introduced Balanced NRE (BNRE) by restricting model hypothesis space to balanced classifiers, which are less confident than optimal Bayes classifier. Authors show that their methods produces conservative posteriors for simulation budgets, addressing the issues raised by Hermans et al. (2021).
 
 
-Regardless of the architecture chosen, the learning for sample $\{ \theta_i, x_i \}_{i = 1}^N$ proceeds with minimizing the cross entropy (equivalent to minimizing KL divergence between true posterior: $p(\theta | x)$ and learned posterior: $q_\phi(\theta | x)$):
-\begin{equation} \label{eq:nnl}
-    \mathcal{L}(\phi) = -\frac{1}{N}\sum_i \log q_\phi(\theta_i | x_i) 
-\end{equation}
-One usually uses standard deep learning techniques such stochastic gradient descent with optimizers such as ADAM (e.g. Dyer et. al. 2024) to update the parameters $\phi$.
-
-If the entire sample $\{\theta_i, x_i\}$ is generated by draws from the prior and used to train the NPE, we have a single round inference. This approach gives amortized posterior. That means that we can infer a conditional posterior for arbitrary observation $x_\text{obs}$. However, in many cases one is interested in posterior for one particular realization e.g. GDP trajectory, which can be restricted to a smaller parameter space. Thus, it may be beneficial to automatically update the prior based on the previous estimated posterior and generate pairs according to the new distribution. This "sequential" approach to SBI methods has been given some attention, beginning with the work by Papamakarios and Murray (2016). They introduce the first sequential NPE (SNPE), which I will refer to as SNPE\_A. They set the initial prior ($p(\theta)$) to a simple gaussian and begin standard NPE training of $q_\phi(\theta | x)$ (modelled via gaussian MDN) by loss derived from \eqref{eq:amortized_NPE} with samples from  prior. After convergence, we set proposed prior ($\tilde{p}(\theta)$) to learned density, and train the next round by sampling from the proposed prior. This repeats for $N$ rounds, after which we return the learned density: $q_\phi(\theta | x)$. This method allows for more efficient use of simulation budget. To account for change of sampling distribution, while learning the correct conditional density: $p(\theta | x) \propto p(\theta)p(x | \theta)$, the authors employ importance weighting when updating the proposed prior between rounds:
-\begin{equation} 
-    \hat{p}(\theta |x ) \propto \frac{p(\theta)}{\tilde{p}(\theta)} q_\phi(\theta | x)
-\end{equation}
-Where, the fraction represent the importance weighting factor and $q_\phi(\theta | x)$ is trained on sample $\{ \theta_i, x_i\}$ from proposed prior. This transformation is possible due to analytical forms for both densities. 
-
-Lueckmann et. al. (2017) proposes an improvement to SNPE. Instead of learning a different posterior and transforming after, they incorporate importance weighting directly into the loss function of \eqref{eq:nnl} and add a calibration kernel $K_\tau$:
-\begin{equation} \label{eq:snpe_b}
-    \mathcal{L}(\phi) = -\frac{1}{N}\sum_i \frac{p(\theta)}{\tilde{p}(\theta)} K_\tau(x_i , x_\text{obs})\log q_\phi(\theta_i | x_i) 
-\end{equation}
-The calibration kernel is used to measure the distance between the observed $x$ and simulated points $x_i$. In other words, the posterior should focus on $x_i$ that are in some sense close to $x_\text{obs}$. Their methods allows for  non gaussian priors and proposals, to which the previous method was restricted. However, may yield higher variance in estimation (Papamakarios et. al. 2019, Lueckemann et. al.2017). 
-
-The most robust approach was introduces by Greenberg et. al. (2019). Their algorithm: SNPE\_C incorporates automatic posterior transformation (APT) for SNPE. APT solves both problems outlines above. It allows for a great variety of priors and proposals, while keeping the variance stable. It achieves this result by defining and training a transformed posterior ($\tilde{q}_\phi(\theta | x)$):
-\begin{equation} \label{eq:apt}
-    \tilde{q}_\phi(\theta | x) = q_\phi(\theta | x)\frac{\tilde{p}(\theta)}{p(\theta)} \frac{1}{Z}
-\end{equation}
-Where $Z$ is a normalization constant. APT uses $\tilde{q}_\phi$ to represent both true posterior and proposals at each round. Thus after a round of training (with standard nn loss: \eqref{eq:nnl} - with $\tilde{q}_\phi$ in the logarithm) we can recover new proposed prior by: $\tilde{p}(\theta) = q_\phi(\theta | x_\text{obs})$, without analytical transformation. However, $Z$ is an integrated expression, which may not be traceable for general densities. Authors introduce atomic proposal and show that then one can frame the APT inference procedure as finite classification problem, by asking which parameter values generated this observation. What turns continuous integral into a finite sum. Based on experiment in the paper, authors find that SNPE\_C is more flexible than SNPE\_A, more stable than SNPE\_B. Moreover, they compare it with SNL method, and find similar or better performance, even on problems which would favor SNL. 
-
-NPE and similar methods are based on simulation outputs for some complex, stochastic models. Especially for ABM, resulting vector is a high dimensional time series, thus it can be beneficial to lower the input dimension for the NPE network (e.g. Dyer et. al. 2024) or incorporate some prior knowledge about output (e.g. exchangeability, dependence) as in time series. This can be done in two main approaches: selecting a set of summary statistics that describe the output, using a NN to learn informative features from data directly. The first is especially relevant for classical ABC approaches, where the algorithm mainly depends on the choice of distance function and summary statistics (e.g. Greenberg et. al. 2019). Thus some literature exists for choosing and testing summary statistics (e.g. Prangle 2018). However, this method can lead to, hard to quantify, losses of information (e.g. Radev et. al. 2020).
-
-The other approach relies on constructing an auxiliary NN that maps simulation output $x$ to a fixed size vector of learned statistics: $s_l(x)$. It is trained together with the density network from the same loss propagation. Many different choices exist for this network, from simple MLP for finance models (Stilmann et. al. 2023), 1D CNN (Radev et. al. 2020), standard CNN used for images (Greenber et. al. 2019) or LSTM recurrent neural networks (Gers et. al. 2000, Dyer et. al. 2024). These architectures can deal with time series data. Another example is by Redev et. al. (2020) with BayesFlow architecture, which is based on invertible neural networks needed for iid. simulation output.
-
-After computing the approximate joint posterior distribution using SNPE or a similar methods, one would like to verify whether the result can be trustworthy. The first easy step, is to condition on the known data ($x_\text{obs}$) and check whether the posterior includes them (assigns non zero propability). One can extend this method to check whether parameters from the posterior give rise to sensible simulation result - close to observed data. (named: Posterior Predictive Checks). While both are useful, they do not provide any mathematical notion of fit. One of the first formal tests was introduced by Geweke (2004). Author suggests to check whether the posterior sampler (aka. approximation) reconstructs the joint distribution by constructing a Gibbs sampler from the estimated posterior: $q(\theta |x )$ and model's likelihood function: $p(x | \theta)$. If the inference is correct, then the sampler will produce accurate joint samples indistinguishable from those generated directly from the prior: $p(\theta, x) = p(x | \theta)p(\theta)$ (we can sample $p(x, \theta)$ both components are known). Z scores can be used to perform a formal test. However, as Talts et. al. (2018) note, the sampler can take a while to converge and validity of z - scores rely on this property.
-
-Cook et. al. (2006) introduces another crucial idea, instead of comparing summaries of the joint distribution using z - scores, we check whether the true value behaves as a draw from its own posterior. This novel approach uses rank statistics (estimated quantiles) to perform a formal check dimension wise. If model and posterior is correct, theses statistics should have a uniform distribution. Authors suggest to formally check this by transforming resulting quantiles into z - scores by the inverse normal CDF function. Moreover, the shape of the resulting histogram can give a hint about the source of miss specification. While correct on some experiments, Talts et. al. shows that this procedure can inhibit bias when using MCMC sampling. To address this issue, they introduce Simulation Based Calibration (SBC), which is also based on rank statistics, but do now assume independent draws from the posterior sampler. Instead of proving the result for quantiles (continuous uniform), they show that the rank statistics for one dimensional variable follow a discrete uniform distribution. 
+With these new diagnostic approaches and constant improvements to the inference procedures.: such as DRO-NPE (Laplante et al. 2026). Neural SBI techniques improve inference, especially for smaller sized training datasets. Wiese et al. (2024) used this approach to estimate behavioral parameters in extended model based on work by Poledna et al. (2023) while Alves et al. (2026) used NPE to identify parameters of an labor market ABM. We follow this trend and adopt these techniques to identify parameters related to matching procedure and import pricing in the baseline ABM model developed by Poledna et al. (2026).
 
 \section{Methodology}
-We will try to answer the question, whether Neural Posterior Estimation improves the calibration and forecasting performance of ABM models. 
-As the underlying simulation engine, we use ABM model developed by Poledna et al. (2023), on Italian economy in $(T_1 = 2010Q1)$ and calibrated using data from 1995Q1 to 2009Q4. The calibration method is described in the original paper.
-
-Since our analysis is based on posterior estimation and forecasting performance, there are three main steps:
+Our analysis is based on applying SBI techniques for parameters estimation / identification in ABM models. We used a macro economical model developed by Poledna et al. (2023) with a few minor changes to allow changes in the chosen parameters. When running the required simulations we replace the original hard coded values for the parameters with draws from the priors or posteriors. Since analysis is based on posterior estimation and forecasting performance, thee main steps can be identified:
 \begin{enumerate}
-    \item Posterior estimation using NPE method on hypothetical trajectories from 2010Q1 to 2016Q4.
-    \item Validation of the posterior using approximate Bayesian technique: Simulation Based Calibration.
-    \item Evaluation of forecasting performance of the model with parameters obtained from NPE. 
+    \item Posterior estimation using NPE and NRE method on synthetical time series data from 2013Q1 to 2020Q4. We use the model to generate those trajectories.
+    \item Validation of the posterior using median sweeps and Simulation Based Calibration (SBC) developed by Talts et al. (2018).
+    \item Evaluation of forecasting performance of the model with parameters obtained from NPE and NRE.
 \end{enumerate}
-
-\subsection{Sampling}
-
 
 \subsection{Posterior Estimation}
 
+\subsubsection*{Parameters}
+
 \begin{table}[h]
     \centering
-    \begin{tabular}{c|c|c}
-        Symbol & Name & Prior range \\
+    \begin{tabular}{c|c|c|c}
+        Symbol & Name & Prior range & Baseline value \\
         \hline 
-         $\psi$ & fraction of income devoted to consumption &  \\
-         $\alpha^G $ & Autoregressive coefficient for government consumption & \\
-         $\alpha^E$ & Autoregressive coefficient for exports &  \\
-         $\beta^E$ & Scalar constant for exports & \\
-         $\xi^\gamma$ & Weight of economic growth &  \\
+         $\omega$ & visiting weighting factor & $\operatorname{Unif}(0, 1)$ & 0.5 \\
+         $\lambda_p$ & visiting probability soft max temperature & $\operatorname{Unif}(0.001, 5)$ & 2 \\
+         $\bar{\pi}$ & Import pass - through parameter & $\operatorname{Unif}(0, 1.5)$ & 1 \\
          \hline \hline
     \end{tabular}
     \caption{Parameters to estimate, convention the same as in Poledna et. al paper}
     \label{tab:parameters_to_estimate}
 \end{table}
 
+In the original model, most parameters are identified from available data. Sources include government statistics, input - output tables, sector accounts and demography data. However, there is a number of parameters that are hard coded in the original model, but can differ between countries and correspond to the matching procedure and trade channel. Thus, it might be difficult to develop a standard calibration procedure and likelihood free techniques seems like a perfect fit. 
 
-The simulation includes a variate of parameters, some of them stay constant, some vary over time. In order to answer the research question, we focused on five constant ones, that we think have significant influence over GDP growth. Moreover we, tried to identify those, for which standard calibration (used by Poledna et. al.) might be difficult. Due to lack of sufficient data or the nature of the parameter itself. Our choice of parameters is presented in Table. \ref{tab:parameters_to_estimate} and explanation together with GDP decomposition is below:
-\begin{equation} \label{gdp_decom}
-    Y = \text{Consumtion} + \text{Investment} + \text{Gov. expenditure} + \text{Net Exports}
-\end{equation}
-\begin{enumerate}
-    \item [$\psi$] - It reflects the fraction of households income devoted to consumption. We decided to include it in our analysis, since consumption is one of the major drivers of GDP growth. While at the same time, the fraction can be quite challenging to estimate. 
-    \item [$\alpha^G$] - Second parameter dictates the persistence of GDP. Since Government expenditure is a significant portion of Austria GDP (more than 50\% in 2024), this parameter can identify this relation. 
-\end{enumerate}
+We follow the approach by Wiese et al. (2024) and Dyer et al. (2024) to use SBI techniques to compute posteriors for those parameters. They used NPE and NRE to estimate four 4 parameters influencing firms target production. We investigate a different aspect of the model by parameterizing two computation during goods-market matching step inside the model by introducing parameters: $\omega$ and $\lambda_p$ and relative pricing of imported goods: $\bar{\pi}$. In the matching step, each agent who need to fulfill their demands visit a number of firms. The probability a firm will be visited depends on (1) product price via an exponential distribution and (2) the relative size of the firm, such that larger companies have greater chance of being visited. The two are then combined by averaging. The parameters we introduce change (1) how strongly agents favor cheaper products ($\lambda_p$) and (2) how the two components are averaged ($\omega$). We think that the chosen parameters depend on the considered economy, while lack a clear point-wise way of calibration. What makes SBI approach perfect fit. The original computation for probabilities in the market matching process in Poledna et al. (2023) is as follows:
+\begin{align*}
+    pr_i^{\text{price}}(t) &= \frac{e^{-2P_i(t)}}{\sum_{i \in I_{s = g}}e^{-2P_i(t)}} \\
+    pr_i^{\text{size}}(t) &= \frac{Y_i(t)}{\sum_{i \in I_{s = g}}Y_i(t)} \\
+    pr_i^{\text{cum}}(t) &= \frac{pr_i^\text{price} + pr_i^\text{size}}{2}
+\end{align*}
 
-We want to find:
+We parametrize the soft max computation by $\lambda_p$ and final weighting by $\omega$:
+\begin{align*} 
+    pr_i^{\text{price}}(t) &= \frac{e^{- \lambda_p P_i(t)}}{\sum_{i \in I_{s = g}}e^{-\lambda_p P_i(t)}} \\
+    pr_i^{\text{size}}(t) &= \frac{Y_i(t)}{\sum_{i \in I_{s = g}}Y_i(t)} \\
+    pr_i^{\text{cum}}(t) &= \omega \cdot  pr_i^\text{price} + (1 - \omega) \cdot pr_i^\text{size}
+\end{align*}
+
+In the above, $Y_i(t)$ is the production of goods by firm $i$, $pr_i^\text{price}(t)$ represent the first (1) aspect of matching and $pr_i^{\text{size}}(t)$ the second (2). 
+
+The last parameter represent the pass - through of import import prices in the model. It governs how sensitive are they to shock in foreign country. Originally the foreign prices are assumed to follow the domestic sectoral averages. Thus the import price for good $m: P_m(t)$ is determined by previous sectoral average ($\bar{P}_g(t - 1)$) adjusted for inflation $P_m(t) = \bar{P}_g(t - 1)(1 + \pi^e(t))$. With the introduced the pass - trough parameter it becomes:
+
 \begin{equation}
-    p(\theta | x_{\text{obs}}) = \frac{p(x_{\text{obs}} | \theta) p(\theta)}{p(x_{\text{obs}})}
+    P_m(t) = \bar{P}_g(t - 1)( 1+ \pi^e(t) \cdot \bar{\pi} )
 \end{equation}
-With $x_{\text{obs}}$ referring to the observed trajectory of GDP growth from 2010Q1 to 2016Q4.
-However, the left hand side of the above expression is intractable and difficult to derive (Dyer et. al. 2022, 2024). Thus, we use SNPE\_C method to approximate this posterior by running many simulations with parameters from the proposed priors.
 
-The inference procedure, as described by Dyer et. al. starts by choosing appropriate priors for the choose parameters. Following the modeling choice of Alves et. al., and lack of strong signals to deviate, we decided to use uniform priors $(p(\theta))$ with bounds presented in table \ref{tab:parameters_to_estimate}. 
+With Bayesian methods we want to find:
 
-With the given priors, we begin the sequential NPE estimation:
+\begin{equation}
+    p(\theta \mid x_{\text{obs}}) = \frac{p(x_{\text{obs}} | \theta) p(\theta)}{p(x_{\text{obs}})}
+\end{equation}
+
+With $x_{\text{obs}}$ referring to the observed trajectory of five economic aggregates: real GDP, GDP deflator, real household consumption, real capital formation, real investment. However, the left hand side of the above expression is tractable and difficult to derive (Dyer et al. 2022, 2024). 
+
+\subsubsection*{Prior selection}
+The inference procedure, as described by Dyer et al. starts by choosing appropriate priors for the choose parameters. Following the modeling choice of Alves et al., and lack of strong signals to deviate, we decided to use uniform priors $(p(\theta))$ with bounds presented in table \ref{tab:parameters_to_estimate}, such that the original values are within the bounds and values are economically feasible. However, we adopted the approach to let the priors be quite wide and rely on prior checks and SBI procedures to capture the information in the posterior.
+
+We investigate whether our chosen priors give rise to a plausible GDP trajectories by running Prior Predictive Checks. To avoid overfitting to a specific time period, run the checks for multiple calibration dates ($C = 5$), each time for 3 years. Thus if the resulting trajectories look similar to the observed one we keep the proposed prior. If we observed a unrealistic deviation (e.g. the GDP dips drastically or explode), we slightly restrict the prior and try again. The final priors are in table. (\ref{tab:parameters_to_estimate})
+
+Moreover, for each parameter, a identification screen was run before training. We vary the parameter through the prior and plot the trajectories of the aggregates. If they move, we hope that NPE and NRE are able to identify them from the data. If the parameters do not influence the observables training is bound to return the prior, since data carry no information. 
+
 \begin{enumerate}
-    \item Draw $N$ samples from the current proposed prior (original prior in the first round): $\{ \theta_i \}_i^N$
-    \item For each draw, obtain $x_i$ from the simulation, with the chosen parameters replaced by the draw $\theta_i$, and the rest obtained by original calibration. Due to stochasticity of the simulator, we decide to average $M$ runs for each parameter draw (eq: \eqref{eq:batch_updating})
-    \item Perform single round NPE estimation according to loss given by SNPE\_C based on (see dimensionality reduction)
-    \begin{enumerate}
-        \item A set of handcrafted statistics, yielding: $\{\theta_i, s(x_i)  \}_i^N$
-        \item Feature selection made by an auxilary (embeding network: $H$): $\{\theta_i , H(x_i)\}_i^N$
-    \end{enumerate}
-    \item (When using handcrafted statistics) Remove extreme outliers by the IQR approach: below $Q1 - m \cdot IQR$ or above $Q3 + m \cdot IQR$. We used $m = 8$.
-    \item Update the proposed prior by: $\tilde{p}(\theta) = q_\phi(\theta | x_\text{obs})$
-\end{enumerate}
+    \item [$\omega$: ] Since its a weighting coefficient, we know $0 \leq w \leq1$. Thus adopting the aforementioned approach, we keep $\omega \sim \operatorname{Unif}(0, 1)$ which is centered around the original value.
+    
+    \item [$\lambda_p$: ] Since this parameter acts as temperature for softmax, it can technically be any positive real number. However, to keep the prior uninformative, bounded and centered around the original value, we decided to test: $\lambda_p \sim \operatorname{Unif}(0.001, 5)$.
 
-\begin{equation} \label{eq:batch_updating}
-    x_i = \frac{1}{M} \sum_{m = 1}^M x_{i}^m 
-\end{equation}. 
-\begin{table}[t]
-    \centering
-    \begin{tabular}{l|c c c c }
-        \hline
-        Summary statistics & S1 & S2 & S3 & S4 \\
-        \hline
-        Series mean &   - & - & - & - \\
-        Series standard deviation  &  - & - & - & -  \\
-        AR(1) coefficient  & - & - & - & - \\
-        AR(2) coefficient  &- & - & - & - \\
-        Lag k correlation  &  - & - & - & -  \\
-        Skewness  & - & - & - & - \\
-        Kurtosis & - & - & - & - \\ 
-        q - percentile & - & - & - & - \\
-        Recession count &- & - & - & -\\
+    \item [$\bar{\pi}$: ] While the pass - through coefficient is typically below 1, it is possible to observe values higher than 1. Thus, to account for that and have the recovery value inside the bound we decide to use: $\operatorname{Unif}(0, 1.5)$
+\end{enumerate}
+Plots for prior predictive checks and identification sweeps can be found in the Appendix.
+
+\subsubsection*{Data \& Implementation details}
+We use the BeforeIT (Glielmo et al. 2025) package to generate the training set. Starting from 2010Q1, we calibrate the model $C = 5$ times for consecutive years using BeforeIT function: get\_params\_and\_initial\_conditions ($\cdot$) with calibration data downloaded from zenodo (BeforeIT.download\_zenodo\_calibration\_object($\cdot $)), modified for my need to load from disk if the data was downloaded before). Thus our model is trained on trajectories covering 2010Q1 - 2016Q4. We sample from the prior $N_\text{samples} = 10^5$ draws and run the model for each parameter sample, starting from $C$ calibration dates for $T = 12$ quarters (maximal forecasting horizon used originally by Poledna et al. (2023) and Wiese et al. (2024)) with the chosen parameters changed, while the rest taken from the standard calibration procedure by Poledna et al. (2023). Since in the official version of BeforeIT, those parameters are hard coded, we are modifying the package code to allow for setting them to arbitrary values on initialization. From each run we collect $Q = 5$ economic aggregates of interest: real GDP, GDP deflator, real household consumption, real government consumption, capital formation (as in Wiese et al. (2024) aggregates forecasting). The observables are then transformed by internal library function: BeforeIT.get\_predictions\_from\_sims($\cdot$). Thus obtaining a three dimensional tensor with dimensions: $(C, Q, T)$. 
+
+For Bayesian techniques, sampling algorithms and diagnostics, we rely on python implementations provided by the package: SBI (Tejero-Cantero  et al. 2020) with some tensor and GPU processing provided by PyTorch (Paszke et al. 2017) and NumPy (Harris et al. 2020).
+
+\subsubsection*{NPE}
+Following Thiele (2025) we decided to use Neural Spline Flow architecture (NSF) for NPE inference. It is an extension of Normalizing Flows (NF) technique based on transforming some base (simple) distribution ($p_U$, usually a standard normal) into the target one ($p_X$), by a sequence of parametrized, invertible functions. It is uses the change of variable formula ($X = g(U) : g^{-1} = f$):
+\begin{equation} \label{eq:nfs}
+    p_X(x) = p_U(f(x)) \big| \det J_f (x) \big|
+\end{equation}
+Which can be unrolled to a composition (or flow) $f = f_n \circ \dots \circ f_2 \circ f_1$ where each $f_i $ is differentiable and invertible with $g_i = f^{-1}_i$. Thus by sampling from $U$ we can easily obtain $p_X(x)$. The functions $f_i$ are parametrized by $\phi$, and optimized by maximizing the data ($x_1, x_2, \dots, x_R \sim p_X$) likelihood under the model:
+
+\begin{equation} \label{eq:amortized_NPE}
+    \hat{\phi} = \arg \max_{\phi} \sum_{i = 1}^R \log q_\phi(x_i)
+\end{equation}
+
+NF modeling have two independent choices: the dependency structure and scalar transform. The first one specified how marginal variables of $x$ (given it is a vector) influence each other. Scalar transform dictates the way values are propagate through the network (see \eqref{eq:maf_regressive} below). The main approach used for NPE is based on Masked Autoregressive Flow (MAF) (Papamakarios et al. 2017). MAF mainly specifies the dependency structure, by enforcing autoregressive nature of the flow and is constructed using gaussian MADE (Germain et al. 2015) blocks as the flow functions ($f_i$). 
+
+MADE is a NN that approximates a joint density: $q_\phi(X_1, \dots , X_n) $ by a series of conditionals: $q_\phi(\cdot) = \prod_i^n p(x_i | x_{j < i})$ (autoregressive). It uses binary masks to compute all conditionals in a single forward pass instead of coupled neural networks. For example, for a dense layer $h = Wx + b$, a MADE would introduce a mask matrix $W$, that restrict impossible connections e.g.: $p(x_2 | x_1)$ only depends on $p(x_1)$. Thus we have a MADE dense layer: $h = (M \odot W)x + b$. With $\odot$ being element wise multiplication. MADE networks can be used for density estimation, then to compute $p(x_1, \cdots, x_n)$, we draw $\{ u_1, \cdots, u_n \}$ from some simple predefined distribution and run the network forward. However, as MAF experiments suggests, stacking these blocks can improve density estimation. In that case we can use the resulting joint distribution from one MADE block as sampling distribution for $u$'s for the next ones. 
+
+MAF models the conditional densities as gaussians: $p(x_i | x_{<i}) \sim \mathcal{N}(\mu_i, \exp (\alpha_i))$, where $\mu_i$ and $\alpha_i$ depend on $x_{<i}$. Thus, given draws for $u_i \sim \mathcal{N}(0, 1)$ we can simulate (propagate) $x_i$ by: 
+\begin{equation} \label{eq:maf_regressive}
+    x_i = \mu_i + u_i \cdot \exp \alpha_i 
+\end{equation}
+
+The equation \eqref{eq:maf_regressive} is used to propagate both ways: sampling (draw $u$, obtain $x$) and density evaluation: given $x$ compute corresponding $u$ (invertibility). It is an example of an affine transform, and can be improved upon. Durkan et al. (2019) suggest to replace this step by rational - quadratic spline transform. Or more generally splines. Thus Neural Spline Flow (NSF) mainly specifies the second axis of NF modeling.
+
+However, 
+
+Regardless of the architecture chosen, the learning for sample $\{ \theta_i, x_i \}_{i = 1}^N$ proceeds with minimizing the cross entropy (equivalent to minimizing KL divergence between true posterior: $p(\theta \mid x)$ and learned posterior: $q_\phi(\theta \mid x)$). One usually uses standard deep learning techniques such stochastic gradient descent with optimizers such as ADAM (e.g. Dyer et al. 2024) to update the parameters $\phi$, with loss given by:
+\begin{equation} \label{eq:nnl}
+    \mathcal{L}(\phi) = -\frac{1}{N}\sum_i^N \log \tilde{q}_\phi(\theta_i \mid x_i)
+\end{equation}
+For the SNPE\_C transformed posterior:
+\begin{equation} \label{eq:apt}
+    \tilde{q}_\phi(\theta \mid x) = q_\phi(\theta \mid x)\frac{\tilde{p}(\theta)}{p(\theta)} \frac{1}{Z}
+\end{equation}
+
+
+\subsubsection*{Embedding strategies} \label{sec: embedding_nets}
+Next step is to choose an embedding method. Both methods: (S)NPE and (S)NRE can work on a set of handcrafted statistics and embedding networks. The first methods comes from research for standard ABC approaches. While the latter comes from NPE and NRE use of gradient learning, which allow for training of additional embedding nets. Moreover, such networks can allow for more structured learning, exploiting relationships between data points / dimensions. It has been found that NNs can greatly improve posterior estimation and parameter recovery (e.g. Alves et al. 2026). Thus, we focus on the neural embeddings, but keep one trained on hand - crafted statistics for reference. Out single input $x_\text{in}$ has a dimension: $(C, Q, T)$ as described in the data section.
+\begin{enumerate}
+    \item [a. ] Hand - crafted statistics: $s(x_i) : \mathbb{R}^{T_\text{train}}\to \mathbb{R}^d$. With $D = 10$ being the number of statistics. We use  summaries chosen by Dyer et al. (2024) and ALves et al. (2026): mean, variance, max, min, $q_p$, $\gamma_k$. For $p \in \{ .25, .5, .75 \}$ and $k \in \{ 1, 2, 3 \}$, compute for each feature of the output. For each input $x_\text{in}$ we extract the last two dimension, and treat runs with different calibration dates as additional data points and assign them the same prior draws (under the assumption that parameters remain constant throughout the calibration window, they constitute a valid draw from the joint distribution) using PyTorch function: repeat\_interleave$(\cdot)$ (PyTorch: Paszke et al. 2017). Resulting in $x_\text{in}$ of shape: $(Q, D)$ and the sample size $N_\text{samples}$ grows to $N_\text{samples}  \cdot C = 5 \cdot 10^5$.
+ 
+    \item [b. ] Use a embedding network to learn the features. Here we compare a few architectures based on GRU RNN architecture proposed by Cho et al. (2014)
+    \begin{enumerate}
+
+        \item [i. ] The basic RNN over features. Similarly as for the handcrafted statistic case, we unroll $x_\text{in}$ along calibration dates to obtain more sample data points ($5 \cdot 10^5$). For this network we use PyTorch implementation of GRU RNN network with two hidden layers of size $H = 64$ to process the tensor: $x_\text{in}$ of shape $(Q, T)$. The block is followed by one MLP layer with output size of $16$. The MLP takes the final hidden state from the RNN block.
         
-    \hline \hline
-    \end{tabular}
-    \caption{Summary statistics}
-    \label{tab:summary_statisc}
-\end{table}
-
-\subsubsection{Dimensionality reduction}
-Next step is to choose a dimensionality reduction method. Since out NPE model learns (and then inverts) the map $x \in \mathbb{R}^{T_\text{train}}; T_{\text{train}}=  T_2 - T_1$, it is useful to lower the input dimension to prevent erratic optimization and overfitting. We compare two main approaches:
-\begin{enumerate}
-    \item [a. ] Use a hand crafted set of statistics: $s(x_i) : \mathbb{R}^{T_\text{train}}\to \mathbb{R}^d$. With $d$ being the number of statistics. We decided to check a few combinations of summary statistics, all of them are computed over log difference: $\ln X_{t + 1} - \ln X_t$ to account for possible non - stationarity.
-    \begin{enumerate}
-        \item [i. ] Ten summaries chosen by Dyer et. al. (2024) and ALves et al. (2026): mean, variance, max, min, $q_p$, $\gamma_k$. For $p \in \{ .25, .5, .75 \}$ and $k \in \{ 1, 2, 3 \}$ ($d_1 = 10$).
-        \item [ii. ] The nature of our output (GPD) suggest to incorporate some measure for yearly cycles and shape of the distribution. Thus we add yearly correlation, skewness and recession count; and remove autocorrelation for $k \geq 2$ and quartiles except for the median ($d_2 = 9$).
+        \item [ii. ] Simple Hierarchical RNN over features. It takes original $x_\text{in}$ with different calibration dates. We use the same GRU RNN as in (i) over the last two dimensions. We take the last hidden value from the RNN, what results in a tensor: $h_\text{out}$ of shape $(C, H)$ and compute the mean over calibration dates: $h^\text{mean}_j = \operatorname{Mean}_{1 \leq i \leq C}\left( h^\text{out}_{i, j} \right)$ for $j = 1, \dots, H$ and feed the resulting vector: $h^\text{mean} \in \mathbb{R}^H$ through a single dense layer with output dimension of 16. 
+        
+        \item [iii.] Proper Hierarchical RNN over features and calibration dates. This network uses two GRU RNN blocks, each with two layers. First over the latter two dimensions with hidden size of $H_1 = 64$ what yields a tensor of shape: $(C, H_1)$. Which we then pass through the second block with hidden size of $H_2 = 32$. The last hidden size of the second RNN is passed through a single layer MLP with output dimension of 16. 
     \end{enumerate}
-    \item [b. ] Another approach is to let the network learn the features directly, during the training process. Here we also compare a few choices:
-    \begin{enumerate}
-        \item [i. ] CNN network with 1D convolutional layers on raw log - differenced output. 
-        \item [ii. ] CNN network with 2 channels: log level, percentage growth. Combined with MLP for hand crafted summary statistics.
-        \item [iii. ] RNN network used by Dyer et. al. and the labour market analysis. 
-    \end{enumerate}
-    CNN networks are inspired by the research by Radev et al. (2020).
+    
 \end{enumerate}
 
-With both methods, we transform the posterior estimation problem from $p(\theta | x)$ to $p(\theta | s(x))$ where $s(x)$ references both the crafted and learned summaries. 
-The posterior is estimated using extension of normalizing flows (Tabak and Vanden-Eijnden, 2010; Tabak and Turner, 2013; Rezende and Mohamed, 2015) called Masked Autoregressive Flow (Papamakarios and Murray, 2016; Lueckmann et al., 2017; Papamakarios et al., 2019; Greenberg et al., 2019). 
+We used the same generated dateset for all architectures, thus technically the basic RNN has more data points (5 times more), but since they are expanded with the same parameter draw, we test whether more structured embedding network can recover the parameters more precisely. 
+
+\subsubsection*{Sampling}
+The posteriors obtained via NPE and NRE are approximate and require different techniques to obtain samples from. For methods such as NPE, which model the conditional distribution directly, sampling does not require normalisation. Thus, in most cases one can rely on simple Rejection Sampling. However, for bounded priors where posterior mass is concentrated some draws can leak. Thus, one needs to use more stable, but slower algorithms such as MCMC Metropolis-Hastings. For NRE, the posterior is not available directly, but we can recover the unnormalized density. Many methods can be used, for this sampling problem with the most common one being based on MCMC e.g. Metropolis Hastings.
+
+
+\subsubsection*{Training}
+With the given priors, we train multiple NPE and NRE estimators according to Algorithm 1 in Dyer et al. (2024). We perform single round inference with $N_\text{samples} = 1000$ as outlined below:
+\begin{enumerate}
+    \item Draw $N_\text{samples}$ samples from the prior : $\{ \theta_i \}_i^N$
+    
+    \item Perform NPE / NRE estimation on pre generated dataset for a given embedding (see section \ref{sec: embedding_nets})
+    \begin{enumerate}
+        \item [NPE: ] Train until convergence, with Stochastic Gradient Descent on the loss function from NPE\_C
+        \item [NRE: ] Train until convergence: sample a mini batch from all generated so far samples, and update the parameters on the basis of finite - sample multinomial logistic loss (Durkan NRE: see eq: \eqref{eq:multinomial_loss})
+    \end{enumerate}
+    
+    \item Update the prior:
+    \begin{enumerate}
+        \item [NPE: ] Set the new prior directly: $\tilde{p}(\theta) = q_\phi(\theta \mid x_\text{obs})$
+        \item [NRE: ] Set unnormalized prior: $\tilde{p}(\theta) \propto \exp \{ s_\phi(\theta, x_\text{obs}) \}$
+    \end{enumerate}
+\end{enumerate}
 
 \subsection{Validation of the posteriors}
-As with other Bayesian Methods, evaluating the validity of the posterior is a crucial step in the inference process. Since we construct a conditional posterior used for forecasting, we use historical data: from 1995Q1 to 2009Q4, to obtain required summary statistics: $s(x_{obs}) = s(x_{1995Q1:2009Q4})$. We use standard rejection sampling to obtain draws from the conditional posterior. For each option, we fun the following diagnostics, if option fails, it is not considered further:
+As with other Bayesian Methods, evaluating the validity of the posterior is a crucial step in the inference process. We condition on coupled observed trajectories $x_\text{obs}$ starting from 2010Q1, till 2016Q4 (the $x_\text{obs}$ has to be the same shape as training data); for the single layer RNN and hand drafted statistics we condition on the last observeed series spanning: 2014Q1 - 2016Q4. We use standard rejection sampling to obtain draws from the conditional posterior for NPE evaluation and MCMC algorithm for NRE posterior. The first test is merely visual diagnostics, while the second (sweep) provides identification test. Ideally, all parameters are identified from the data, which would be the case if the posteriors collapse onto a smaller support, with possibly multiple modes. The last one (SBC) given a formal statistical test for NPE procedure and validity of the final posterior. It is important to note, that our two important checks: sweep and SBC rely on the fact that the posterior is amortized. That is approximated well on the whole support, and thus the choice for single round inference.
 \begin{enumerate}
-    \item Pairplot check - assess whether the conditional posterior includes the values given by standard calibration (by Poledna et. al.) 
-    \item Posterior Predictive Check - run the simulation $N'$ times with parameter samples from the conditional posterior, compute distribution for statistics (either hand - crafted or through a neural network) and check whether the observed ones fall onto the support. 
-    \item Simulation Based Calibration - the formal diagnostics procedure as described by Talts et. al. (2018). The follow Algorithm 1 from that paper, with $L = $, and repeated $N = $ times:
+
+    \item Recovery test for baseline values - we generate data from the baseline model and run inference on those new data points to obtain $N$  posterior samples: $\theta_i$. We check whether the ground truth value lies inside the 95\% confidence interval. 
+
+    \item Parameter identification / recovery sweep - assess whether the posterior recovers (identifies) the parameters: (for each parameter separately)
+    \begin{enumerate}
+        \item [i. ] For each of the 3 parameters we take 7 values evenly spaced between the prior bounds ($\tilde{\theta} \in \mathbb{R}^{7 \times 3}$ ) and define $\theta_\text{base} = (\frac{1}{2}, \frac{5}{2}, \frac{3}{4})$ as the mean of priors. 
+        \item [ii. ] For each parameter, we take corresponding values of $\tilde{\theta}_i \in \mathbb{R}^7$, and run simulation for each value of $\tilde{\theta}_i$ with the other two parameters according to $\theta_\text{base}$ thus $\{x_i \}_{i =1}^M \sim p(x|\theta_\text{base} \land \tilde{\theta})$
+        \item [iii. ] For each simulator run $\{ x_i \}$ we draw $N = 1000$ posterior samples: $\{ \theta^{(i)}_j \} \sim q_\phi(\theta \mid x_i)$, thus for each parameter combination (7 per dim $\rightarrow $ 21 total) we obtain a set of $\theta$'s of dim: $(N, M)$.
+        \item [iv. ] Compute the location statistic across posterior draws. We took the median (giving a median's distribution across simulator run):
+        \begin{equation}
+            m_i = \operatorname{Median}_{1 \leq j \leq N} \left( \theta^{(i)}_j \right)
+        \end{equation}
+        We average the medians across simulation runs: $\bar{m} = \operatorname{Mean}_{1 \leq i \leq M}\left( m_i \right)$
+        And compute average's  90\% credible interval ($I = q_{.95} - q_{.05}$) using quantiles from the median's distribution:
+        \begin{equation}
+            q_\alpha= \operatorname{Quantile}^\alpha_{1 \leq i \leq M} \left(m_i  \right)
+        \end{equation}
+        
+        \item [v. ] Plot the points: $\{ \tilde{\theta},  \bar{m}\}$ for the given parameter. Together with the credible bounds. We add the line $y = x$ as reference for a perfect identification.
+    \end{enumerate}
+    After the procedure we obtain $d = 3$ plots
+    
+    \item Simulation Based Calibration - the formal diagnostics procedure as described by Talts et al. (2018). It is important to note that SBC only checks a necessary condition, meaning it does not prove that the calibration procedure was correct. It can only detect whether posterior is wrong, e.g. a posterior equal to the prior passes the test. Moreover, is only valid for amortized posteriors, since it samples from entire prior. We follow Algorithm 1 from that paper, with $L = 1000$ posterior samples, and repeated for $N = 1000$ prior draws (with $B = 20$ histogram bins):
     \begin{enumerate}
         \item [i. ] Draw a prior sample: $\tilde{{\theta}} \sim p(\theta)$
-        \item [ii. ] Draw a simulated data set: $\tilde{x} \sim p(x|\theta)$ 
+        \item [ii. ] Draw a simulated data set: $\tilde{x} \sim p(x \mid \theta)$ 
         \item [iii. ] Draw posterior samples: $\{ \theta_1, \dots , \theta_L \} \sim q_\phi(\theta | \tilde{x})$
         \item [iv. ] For each one - dimensional random variable do:
         \begin{enumerate}
@@ -215,80 +336,463 @@ As with other Bayesian Methods, evaluating the validity of the posterior is a cr
             \item Update the histogram with the rank statistic
         \end{enumerate}
     \end{enumerate}
-    With the obtained histogram we check for deviations from uniformity.
+    We complement the histogram with 99\% band expected under a uniform histogram. It represents distance between 0.005 and 0.995 percentiles of the $\operatorname{Binomial}(N, (L + 1)^{-1})$ distribution to help identify anomalies (we expect one bin out of a hundred to be outside of the band). Moreover, we plot the empirical CDF of the bins distribution: $\text{bin\_rank}_j = \lfloor r_j / B \rfloor $ for $j = 1, \dots, N$. The histogram check allows for detecting structural inconsistencies or biases in the posterior estimation. When needed, we also perform coverage approximations\footnote{For each prior draw $\{\tilde{\theta}_j\}_{j = 1}^N$ and corresponding $L$ posterior samples we compute 90\% and 95\% CI out quantiles from $L$ draws store the results: $\tilde{\theta}_i \in \text{CI}$ for both intervals. We average the binary results across $N$ prior samples. For an ideal procedure, we would like to have the mean to be equal corresponding confidence level.} and compute z - scores \footnote{Since rank $\{r_j\}_{j = 1}^N \in \operatorname{DU}[0, L] \implies \mu_r = \frac{L}{2} = 500, \sigma_r = \sqrt{\frac{L^2  - 1}{12}} \approx 289$. The mean rank follows approximately $\bar{r} \sim \mathcal{N}(\mu_r, \sigma = \frac{\sigma_r}{\sqrt{N}})$ for N prior draws by CLT. Thus the z - score can be found $z_{\bar{r}} = \left(\frac{\bar{r} - 500}{289}\right) \cdot \sqrt{1000}$ } for the mean rank based on the central limit theorem for each parameter.
+    
+    \item Posterior Predictive Check - run the simulation $N$ times with parameter samples from the conditional posterior, check whether the resultant trajectories look sensible as compared to the observed trajectory: $x_\text{obs}$
+    
 \end{enumerate}
 
 \begin{equation} \label{eq:rank_statistics}
     r\left( \{f(\theta_i)\}^L_i, f(\tilde{\theta}) \right) = \sum_{i = 1}^L\mathbb{I} \left[f(\theta_i) < f(\tilde{\theta}) \right] \in [0, L]
 \end{equation}
 
-\subsection{Forecast validation}
-For each method (option) that passed validation we compute the out of sample forecast from $T_\text{begin} = 2016Q1$ till $T_\text{end} = 2020Q4$ with the analyzed parameters taken to be the empirical mean of $N = 1000$ samples from the conditional posterior. We compute the RMSE for each forecast length (indexed by quarters), $T \in [0,  T_\text{end}]$:
+\subsection{Forecast Evaluation} \label{sec:methodology_forecast}
+We compare the out-of sample forecasting performance of the methods by computing a median of the root mean squared forecast error out of 100 MC runs with parameter values taken to be a sample mean (of $N = 1000$ samples). The medians is computed for each observable separately for various forecast lengths. We follow Wiese et al. (2024) and report the RSFME medians for forecasts of lengths: $T \in \{ 1, 2, 4, 8, 12 \}$ in quarters. The forecast begins from $T_\text{begin} = 2017Q1$ with maximal forecast horizon of 12 quarters (the standard forecast horizon used in both referenced paper) thus we have: $T_\text{end} = 2019Q4$ (inclusive). 
+
 \begin{equation}
-    \left\{RMSE_T \right\}_{T = 0}^{T_\text{end}}  = \sum_{t = T_\text{begin} + 1}^T \left( x_{t} - y_{t} \right)^2
+    \left\{ \text{RMSFE}_T \right\}  = \operatorname{Median}_{1 \leq i \leq 1000} \sqrt{ \frac{1}{T - T_\text{begin}} \sum_{t = T_\text{begin} + 1}^T \left( \hat{X}_i(t) - Y(t) \right)^2}
 \end{equation}
 
+Where $\hat{X}_i(t)$ represents the forecasted value at time $t$ for a given observable by run $i$ and $Y(t)$ the observed value for this observable. 
 \section{Results}
 
-\section{Summary}
+\subsection{Posterior's validity} \label{sec:validity}
+
+\begin{table}[ht]
+    \centering
+    \addtolength{\leftskip} {-1cm} % increase (absolute) value if needed
+    \addtolength{\rightskip}{-1cm}
+    \begin{tabular}{|c|c c c|c c c |}
+        \hline
+         Embedding & 
+         \multicolumn{3}{|c|}{Mean of medians (Recovery ratio)} & \multicolumn{3}{|c|}{Mean 95\% CI width} \\
+         & $\omega$ & $\lambda_p$ & $\bar{\pi}$ &  $\omega$ & $\lambda_p$ & $\bar{\pi}$ \\
+         \hline
+         Statistics & 0.481 (1.000) & 2.521 (1.000) & 0.788 (0.988) &  0.903 & 4.533 & 1.269 \\
+         Basic RNN over features &0.486 (1.000) & 2.506 (1.000) & 0.921 (0.980) &   0.932 & 4.713 & 0.964 \\
+         Simple Hierarchical &0.442 (0.999) & 2.536 (1.000) & 0.984 (0.926)&  0.872 & 4.731 & 0.385 \\
+         Proper Hierarchical &0.504 (1.000) & 2.509 (1.000) & 0.968 (0.947) &  0.939 & 4.712 & 0.449\\
+         \hline \hline
+    \end{tabular}
+    \caption{NPE Recovery posterior statistics}
+    \label{tab:recovery_npes}
+\end{table}
+
+We start with the recovery tests for the obtained posteriors. With the baseline parameter values we run the simulation $N = 1000$ times and for each, infer the posterior, from which we sample $L = 1000$ observations. For each posterior we compute the mean, median, std, 95\% CI interval. In tab. \ref{tab:recovery_npes} we present mean median across $N$ inferences, ratio of of posteriors which recovered the generating parameters according to the computed $95\%$ CI for each embedding and the mean interval width. 
+
+Firstly, all variants recover the baseline matching parameters $\omega = 0.5, \lambda_p = 2$ every time (only Simple Hierarchical with one exception); failures happen more often. For all but the Simple Hierarchical, recovery rates are close or above the 95\% confidence level, what can explained by randomness of the process, but the result below 95\% is concerning and suggest that Simple Hierarchical posterior is visibly too narrow and skewed to the left (see appendix fig. \ref{fig:hierarchical_anomaly_recovery}, \ref{fig:simple_hierarchical_anomaly_recovery} and the discussion there for more information). Moreover two hierarchical RNNs are significantly more precise (for $\bar{\pi}$) than first two embeddings (based on average interval widths). This metric and recovery rates give insights for the major results. They indicate that the posteriors for $\omega$ and $\lambda_p$ are close to uniform (posterior equal to the prior, 0 identification), while $\bar{\pi}$ could be identified and quite narrow. 
+
+For a identification test we continue with a median sweep. Figure \ref{fig:median_sweeps} shows the obtained plots for three embeddings. The posteriors for $\lambda_p$ appear to be basically uniform for all sweep values, with medians always landing around 2.5 and small confidence bands. Thus, not identifiable for this model with the given observables. Similarly for $\omega$, the posterior medians remain on the same level: $\frac{1}{2}$ (mean and median of the prior distribution on $[0, 1]$) for Statistic and Proper Hierarchical embeddings. However, for the other two, some traction was found, with Simple Hierarchical following the generating truth values more closely. In both cases the 95\% CI for the medians was quite large.
+
+On the other side, NPEs posteriors based on RNN embeddings were able to follow the truth values for $\bar{\pi}$ more closely. The hierarchical embeddings (fig. \ref{fig:median_sweep_simple}) again showed narrower intervals and even the statistics NPE showed some identification (fig. \ref{fig:median_sweep_statistics}).
+
+\begin{figure} [h!]
+    \centering
+    \addtolength{\leftskip} {-2cm} % increase (absolute) value if needed
+    \addtolength{\rightskip}{-2cm}
+
+    \begin{subfigure}{1.2\textwidth}
+        \centering
+        \includegraphics[width=1\linewidth]{pngs/sweeps/sweep_posterior_medians_stat_m,s,min_gr,max_gr,ac1,ac2,ac3,q25_gr,q50_gr,q75_gr_from_posterior_1000_20260622_114614.png}
+        \caption{Median sweep for Hand Crafted statistics}
+        \label{fig:median_sweep_statistics}
+    \end{subfigure}
+    \medskip
+    \begin{subfigure}{1.2\textwidth}
+        \centering
+        \includegraphics[width=1\linewidth]{pngs/sweeps/sweep_posterior_medians_nn_seq_multivariate_from_posterior_1000_20260622_114614.png}
+        \caption{Median sweep for Basic RNN}
+        \label{fig:median_sweep_seq}
+    \end{subfigure}
+    \medskip
+    \begin{subfigure}{1.2\textwidth}
+        \centering
+        \includegraphics[width=1\linewidth]{pngs/sweeps/sweep_posterior_medians_nn_simple_hierarchical_from_posterior_1000_20260622_114614.png}
+        \caption{Median sweep for Simple Hierarchical}
+        \label{fig:median_sweep_simple}
+    \end{subfigure}
+    \caption{Sweep results}
+    \label{fig:median_sweeps}
+\end{figure}
+
+\subsubsection*{SBC results}
+With the sweep results showing weak identification in $\omega$ and strong for $\bar{\pi}$ we need to check, whether the inference procedure has notable issues. Since SBC cannot tell us whether the NPE posterior is correct (a prior passes the test by construction) we use it to detect potential bias and under / over confidence of the posterior.
+
+\begin{figure}[h!]
+    \centering
+    \addtolength{\leftskip} {-2cm} % increase (absolute) value if needed
+    \addtolength{\rightskip}{-2cm}
+    \centering
+    \begin{subfigure}{1\textwidth}
+        \centering
+        \includegraphics[width=0.85\linewidth]{pngs/sbc/sbc_hist_nn_npe_seq_multivariate_from_prior_1000_from_posterior_1000_20260622_170518_seed_0.png}
+        \caption{SBC histogram for Basic RNN embedding} 
+        \label{fig:seq_sbc_hist}
+    \end{subfigure}
+
+    \begin{subfigure}{1\textwidth}
+        \centering
+        \includegraphics[width=0.85\linewidth]{pngs/sbc/sbc_hist_nn_npe_simple_hierarchical_from_prior_1000_from_posterior_1000_20260622_170518_seed_0.png}
+        \caption{SBC histogram for Simple Hierarchical embedding}
+        \label{fig:simple_sbc_hist}
+    \end{subfigure}
+
+    \begin{subfigure}{1\textwidth}
+        \centering
+        \includegraphics[width=0.85\linewidth]{pngs/sbc/sbc_hist_nn_npe_hierarchical_from_prior_1000_from_posterior_1000_20260622_170518_seed_0.png}
+        \caption{SBC histogram for Hierarchical embedding}
+        \label{fig:hierarchial_sbc_hist}
+    \end{subfigure}
+    \caption{SBC histograms}
+\end{figure}
+
+Figure \ref{fig:seq_sbc_hist} shows the histogram of rank statistics for the baseline RNN. There is no structural anomaly present as described in Talts. et al. (2018) (e.g. U - shaped histogram) and we do not observe statistically significant deviations in the number of bins outside of expected grey area. However, some minor skewness might be present in the marginal posteriors. 
+
+On the other hand, histogram for the both Hierarchical embeddings show some potential issues. With Simple Hierarchical we observe quite strong skew in $\omega$ indicating that the approximate posterior is below the true one (overconfident). What corresponds with the pairplot (see fig. \ref{fig:pp_simple_hierarchical} in the appendix) and sweep results, where this embedding tracked some signal, while others returned $\pm$ uniform posterior. Moreover, histogram for $\bar{\pi}$ has a visible, but roughly within expected bounds, U shape. Which corresponds to over - confident marginal and aligns with ensembles presented in tab. \ref{tab:seed_ensembles}. 
+
+The histogram for full Hierarchical embedding fig. (\ref{fig:hierarchial_sbc_hist}) shows good calibration for both matching parameters and visible, but within bounds, skew to the right for $\bar{\pi}$ - slightly too much mass for small values. To further analyze these potential drawbacks, we computed z - score for average empirical rank and empirical coverage levels for 90\% and 95\% for the three RNN networks. Moreover, we plot the empirical CDF of the binned ranks distribution for both hierarchical networks.
+
+\setlength{\tabcolsep}{12pt}
+\begin{table}[ht]
+    \centering
+    \addtolength{\leftskip} {-1cm} % increase (absolute) value if needed
+    \addtolength{\rightskip}{-1cm}
+    \begin{tabular}[width=\textwidth]{|c|c c c|c c c|}
+        \hline
+         Embedding  & \multicolumn{3}{|c|}{Mean's z - score} & \multicolumn{3}{|c|}{Coverage for 90\% | 95\%}\\
+         & $\omega$ & $\lambda_p$ & $\bar{\pi}$ & $\omega$ & $\lambda_p$ & $\bar{\pi}$ \\ 
+         \hline
+         Basic RNN & 0.86 & 1.10 & 2.48 & 0.906 | 0.952 & 0.898 | 0.937 & 0.915 | 0.964  \\
+         Simple hierarchical & 3.41 & 0.15 & 1.85 & 0.882 | 0.930 & 0.906 | 0.943 & 0.846 | 0.921 \\
+         Hierarchical & -1.02 & 0.68 & 4.59 & 0.890 | 0.943 & 0.890 | 0.936 & 0.906 | 0.954 \\
+         \hline \hline
+    \end{tabular}
+    \caption{Rank summaries for both Hierarchical embeddings}
+    \label{tab:rank_summaries_hierarchicals}
+\end{table}
+
+Based on the estimated coverage, mean z - scores and SBC plots, we conclude that the only basic RNN passes SBC without questions and recovers $\omega$ with highest accuracy. Based on the CDF plot (fig. \ref{fig:simple_sbc_cdf}) and coverage estimation for simple hierarchical embedding, it clearly produces slightly too confident posteriors for $\omega$ and $\bar{\pi}$. Nevertheless, we decided to include it in the forecast evaluation, since the deviations are not that significant. Although it performs the best for $\lambda_p$, this parameters is not identifiable with the given procedure and thus not a decision guiding argument.
+
+The CDF plot for Proper Hierarchical embedding (fig. \ref{fig:hierarchial_sbc_cdf}) together with the $z$ score for mean $\bar{\pi}$ rank indicates too many high ranks for this marginal, the mean was: $541.99$, the highest out of the four networks. However, since the histogram show only small deviations and estimated coverage looks good, we treat this result as a minor nonalignment and do not discard this embedding. 
+
+We suspect that the minor deviations from the theoretically correct calibrations are caused by limited number of training samples. Both hierarchical networks used 5 times less samples than standard RNN embedding, and thus might have not correctly converged. We will elaborate on this finding on the end of this section.
+
+\setlength{\tabcolsep}{6pt}
+
+\begin{figure}
+    
+    \begin{subfigure}{1\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{pngs/sbc/sbc_cdf_nn_npe_simple_hierarchical_from_prior_1000_from_posterior_1000_20260622_170518_seed_0.png}
+        \caption{SBC ECDF for Simple Hierarchical embedding}
+        \label{fig:simple_sbc_cdf}
+    \end{subfigure}
+
+    \begin{subfigure}{1\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{pngs/sbc/sbc_cdf_nn_npe_hierarchical_from_prior_1000_from_posterior_1000_20260622_170518_seed_0.png}
+        \caption{SBC ECDF for Hierarchical embedding}
+        \label{fig:hierarchial_sbc_cdf}
+    \end{subfigure}
+    \caption{SBC ECDFs plots for both hierarchical embeddings}
+\end{figure}
+
+\subsubsection*{Obtained distributions}
+
+Following the checks, we present the pair plots for marginal densities for the hand - crafted and hierarchical embeddings and attach the other two in the appendix. Clearly, the hand crafted statistics were not able to capture the information available in the data for $\bar{\pi}$: fig. \ref{fig:pp_statistics_npe} as a network embedding (basic RNN on fig. \ref{fig:pp_seq_multivariate} and both hierarchical in the appendix: fig. \ref{fig:pp_simple_hierarchical}, \ref{fig:pp_hierarchical}) show this marginal contracting to 0. 
+\begin{table}[ht]
+    \centering
+    \addtolength{\leftskip} {-1cm} % increase (absolute) value if needed
+    \addtolength{\rightskip}{-1cm}
+    \begin{tabular}{|c|c c c|c c c|}
+        \hline
+         Embedding & 
+         \multicolumn{3}{|c|}{Median across seeds (min - max)} &  \multicolumn{3}{|c|}{Mean 90\% CI width} \\
+         & $\omega$ & $\lambda_p$ & $\bar{\pi}$ & $\omega$ & $\lambda_p$ & $\bar{\pi}$ \\
+         \hline
+         Statistics & 0.54 (0.48-0.55) & 2.50 (2.41-2.88) & 0.74 (0.67-0.76) & 0.84 & 4.32 & 1.22\\
+         Basic RNN over features & 0.14 (0.06-0.24) & 2.63 (1.81-3.02) & 0.02 (0.00-0.04) & 0.47 & 4.47 & 0.07 \\
+         Simple Hierarchical & 0.10 (0.01-0.35) & 3.13 (2.62-4.24) & 0.01 (0.00-0.01) & 0.32 & 4.34 & 0.02  \\
+         Proper Hierarchical & 0.27 (0.18-0.40) & 2.63 (2.42-2.73) & 0.02 (0.01-0.03) & 0.61 & 4.44 & 0.06\\
+         \hline \hline
+    \end{tabular}
+    \caption{NPE Posterior ensembles}
+    \label{tab:seed_ensembles}
+\end{table}
+
+To obtain more robust NPE and NRE inferences, we trained the algorithms on the same generated dataset using 7 different seeds. This way we are trying to mitigate the influence of randomness during e.g. weight initialization, learning process. For each seed we computed the posterior median and 90\% CI width. The median, mix, max of the medians' distribution and average interval widths across seeds are presented in table \ref{tab:seed_ensembles}. 
+
+It shows that sharp posterior for $\bar{\pi}$ is replicated for different seeds with network embeddings with significantly smaller mean interval widths, if the true distribution were uniform. Here two, we can see that Simple Hierarchical produced over confident posteriors, with shortest CI's and extremely small range of medians for $\bar{\pi}$. Moreover, median ensembles for $\omega$ suggests that indeed some identification is possible. However the observed data or model does not favor a specific value as in the last parameters and it is difficult to say how strong the signal is, since its only weakly identified by two out of four networks and validity tests indicate marginal overconfidence and bias. 
+
+Consistently with sweep findings, medians for $\lambda_p$ remain in the middle, with the interval widths close to a theoretical width for a uniform distribution ($5 \cdot 9/10 = 4.5$). 
+
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=\linewidth]{pngs/pairplots/pairplot_npe_ m,s,min_gr,max_gr,ac1,ac2,ac3,q25_gr,q50_gr,q75_gr_seed_0.png}
+    \caption{NPE with hand crafted (statistics) embedding}
+    \label{fig:pp_statistics_npe}
+\end{figure}
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=\linewidth]{pngs/pairplots/pairplot_nn_npe_seq_multivariate_seed_0.png}
+    \caption{NPE with standard RNN embedding}
+    \label{fig:pp_seq_multivariate}
+\end{figure}
+
+\subsection{Forecast Evaluation}
+We compare our NPE / NRE calibrated model to the baseline by Poledna et. al. (2023) and to a AR(1) on out - of sample forecasts using the medians described in (\ref{sec:methodology_forecast}). AR(1) models are optimized per observable (five AR models in total) on log - differenced time series from 1996Q1 to 2016Q4. The baseline is calibrated using the original procedure to 2016Q4 and for our model we use empirical mean out of 1000 samples, to obtain parameter values for $\omega, \lambda_p$ and $\bar{\pi}$ and rest is the same as in the original model. The samples are taken from the conditional posterior, given 
+
+\begin{table}[ht]
+    \centering
+    \addtolength{\leftskip} {-2cm} % increase (absolute) value if needed
+    \addtolength{\rightskip}{-2cm}
+    \begin{tabular}{ c|c| c c c c c c|}
+    \hline
+        & \multirow{2}{*}{Aggregate} & \multicolumn{6}{|c|}{Forecasting Horizon} \\
+         & & 1 Quarter & 2 Quarters & 3 Quarters & 1 Year & 2 Years & 3 Years \\
+        \hline
+\parbox[t]{5mm}{\multirow{5}{*}{\rotatebox[origin=c]{90}{ABM RMSFE}}}
+& GDP  & 6 $\cdot 10^{-3}$  & 7 $\cdot 10^{-3}$  & 7 $\cdot 10^{-3}$  & 7 $\cdot 10^{-3}$  & 7 $\cdot 10^{-3}$  & 8 $\cdot 10^{-3}$ \\
+& Inflation  & 5 $\cdot 10^{-3}$  & 5 $\cdot 10^{-3}$  & 5 $\cdot 10^{-3}$  & 5 $\cdot 10^{-3}$  & 5 $\cdot 10^{-3}$  & 5 $\cdot 10^{-3}$ \\
+& Household Cons.  & 8 $\cdot 10^{-3}$  & 8 $\cdot 10^{-3}$  & 8 $\cdot 10^{-3}$  & 7 $\cdot 10^{-3}$  & 7 $\cdot 10^{-3}$  & 8 $\cdot 10^{-3}$ \\
+& Government Cons.  & 6 $\cdot 10^{-3}$  & 8 $\cdot 10^{-3}$  & 9 $\cdot 10^{-3}$  & 9 $\cdot 10^{-3}$  & 9 $\cdot 10^{-3}$  & 10 $\cdot 10^{-3}$ \\
+& Investment  & 22 $\cdot 10^{-3}$  & 36 $\cdot 10^{-3}$  & 32 $\cdot 10^{-3}$  & 34 $\cdot 10^{-3}$  & 36 $\cdot 10^{-3}$  & 34 $\cdot 10^{-3}$ \\
+\hline
+
+        \parbox[t]{5mm}{\multirow{5}{*}{\rotatebox[origin=c]{90}{Statistics}}} 
+& GDP  & -7.39\%  & -9.86\%  & -4.57\%  & -9.72\%  & -4.64\%  & -5.90\% \\
+& Inflation  & -16.38\%  & -8.88\%  & -7.29\%  & -9.24\%  & -5.16\%  & -4.76\% \\
+& Household Cons.  & 1.48\%  & -0.39\%  & -1.60\%  & -5.48\%  & -1.70\%  & -3.23\% \\
+& Government Cons.  & -9.78\%  & -2.25\%  & -6.93\%  & -4.73\%  & -0.31\%  & -1.00\% \\
+& Investment  & -10.16\%  & -6.75\%  & -6.12\%  & -5.89\%  & -3.70\%  & -2.63\% \\
+        \hline
+        \parbox[t]{5mm}{\multirow{5}{*}{\rotatebox[origin=c]{90}{RNN}}}
+& GDP  & -10.32\%  & -15.25\%  & -6.36\%  & -8.21\%  & -2.21\%  & -0.77\% \\
+& Inflation  & -14.50\%  & -9.60\%  & -10.97\%  & -15.98\%  & -13.45\%  & -13.06\% \\
+& Household Cons.  & -9.13\%  & -8.58\%  & -7.16\%  & -7.12\%  & -2.02\%  & -1.18\% \\
+& Government Cons.  & 6.12\%  & 3.01\%  & 1.19\%  & -0.54\%  & -1.74\%  & 1.57\% \\
+& Investment  & -0.70\%  & -5.04\%  & -3.83\%  & -3.90\%  & -3.09\%  & -2.67\% \\
+        \hline
+        \parbox[t]{5mm}{\multirow{5}{*}{\rotatebox[origin=c]{90}{Simple Hierarchical}}} 
+& GDP  & -10.69\%  & -3.31\%  & 3.14\%  & 0.73\%  & 3.18\%  & -0.15\% \\
+& Inflation  & -24.21\%  & -16.45\%  & -15.75\%  & -22.83\%  & -13.89\%  & -14.25\% \\
+& Household Cons.  & 1.90\%  & 3.87\%  & 3.30\%  & 3.66\%  & 4.53\%  & 0.98\% \\
+& Government Cons.  & -3.46\%  & -3.50\%  & 4.25\%  & 3.27\%  & 2.92\%  & 1.15\% \\
+& Investment  & 4.78\%  & 2.80\%  & 3.77\%  & 1.60\%  & -1.75\%  & -1.70\% \\
+        \hline
+        \parbox[t]{5mm}{\multirow{5}{*}{\rotatebox[origin=c]{90}{Hierarchical}}}
+& GDP  & 6.05\%  & 1.89\%  & -0.33\%  & -0.91\%  & -2.93\%  & -2.58\% \\
+& Inflation  & -12.47\%  & -10.41\%  & -15.30\%  & -17.44\%  & -13.41\%  & -16.54\% \\
+& Household Cons.  & 13.42\%  & 8.59\%  & 2.36\%  & 2.02\%  & -0.82\%  & -2.03\% \\
+& Government Cons.  & 12.57\%  & 8.02\%  & 7.35\%  & 2.81\%  & -4.30\%  & 0.06\% \\
+& Investment  & -2.96\%  & 0.32\%  & 0.87\%  & -0.55\%  & -1.79\%  & -4.89\% \\
+    \hline
+    \end{tabular}
+    \caption{Caption}
+    \label{tab:placeholder}
+\end{table}
+
+\section{Summary \& Conclusion}
 
 \section{References}
 \begin{enumerate}
-    \item Poledna, S., Miess, M. G., Hommes, C., and Rabitsch, K. (2023). Economic forecasting with an agent-based model.
-European Economic Review, 151:104306.
-    \item Papamakarios, G., Pavlakou, T., \& Murray, I. (2017). Masked autoregressive flow for density estimation. Advances in neural information processing systems, 30.
-    
-    \item Dyer, J., Cannon, P., Farmer, J. D., and Schmon, S. (2024). Black-box Bayesian inference for agent-based models. Journal of Economic Dynamics and Control, 161:104556. 
-
-    \item Alves, M. L., Dyer, J., Farmer, D., Wooldridge, M., \& Calinescu, A. (2026). Neural Network-Based Parameter Estimation of a Labour Market Agent-Based Model. arXiv preprint arXiv:2602.15572.
-
-    \item Jan-Matthis Lueckmann, Pedro J Goncalves, Giacomo Bassetto, Kaan Ocal, Marcel Nonnen-macher, and Jakob H Macke. Flexible statistical inference for mechanistic models of neural dynamics. Advances in Neural Information Processing Systems, 30, 2017.
-    
-    \item George Papamakarios, David Sterratt, and Iain Murray. Sequential neural likelihood: Fast likelihood-free inference with autoregressive flows. In The 22nd International Conference on Artificial Intelligence and Statistics, pages 837–848. PMLR, 2019.
-
-    \item David S. Greenberg, Marcel Nonnenmacher, and Jakob H. Macke. Automatic posterior trans-formation for likelihood-free inference. 36th International Conference on Machine Learning, ICML 2019, 2019-June:4288–4304, 2019.
-
-    \item Esteban G Tabak and Eric Vanden-Eijnden. Density estimation by dual ascent of the log-likelihood. Communications in Mathematical Sciences, 8(1):217–233, 2010.
-
-    \item Esteban G Tabak and Cristina V Turner. A family of nonparametric density estimation algorithms. Communications on Pure and Applied Mathematics, 66(2):145–164, 2013.
-
-    \item Danilo Rezende and Shakir Mohamed. Variational inference with normalizing flows. In Francis Bach and David Blei, editors, Proceedings of the 32nd International Conference on Machine Learning, volume 37 of Proceedings of Machine Learning Research, pages 1530–1538, Lille, France, 07–09 Jul 2015. PMLR. URL https://proceedings.mlr.press/v37/rezende15.html.
-
-    \item Glielmo, A., Devetak, M., Meligrana, A., \& Poledna, S. (2025). Beforeit. jl: High-performance agent-based macroeconomics made easy. arXiv preprint arXiv:2502.13267. 
-
-    \item Talts, S., Betancourt, M., Simpson, D., Vehtari, A., \& Gelman, A. (2018). Validating Bayesian inference algorithms with simulation-based calibration. arXiv preprint arXiv:1804.06788.
-
-    \item Wiese, S., Kaszowska-Mojsa, J., Dyer, J., Moran, J., Pangallo, M., Lafond, F., ... \& Farmer, J. D. (2024). Forecasting macroeconomic dynamics using a calibrated data-driven agent-based model. arXiv preprint arXiv:2409.18760.
-
-    \item Grazzini, J., Richiardi, M. G., \& Tsionas, M. (2017). Bayesian estimation of agent-based models. Journal of Economic Dynamics and Control, 77, 26-47
-
-    \item Cook, S. R., Gelman, A., \& Rubin, D. B. (2006). Validation of Software for Bayesian Models Using Posterior Quantiles. Journal of Computational and Graphical Statistics, 15(3), 675–692. https://doi.org/10.1198/106186006X136976
-
-    \item Radev, S. T., Mertens, U. K., Voss, A., \& Köthe, U. (2020). Towards end‐to‐end likelihood‐free inference with convolutional neural networks. British Journal of Mathematical and Statistical Psychology, 73(1), 23-43.
-
-    \item Lux, T. (2018). Estimation of agent-based models using sequential Monte Carlo methods. Journal of Economic Dynamics and Control, 91, 391-408.
-
-    \item Germain, M., Gregor, K., Murray, I., \& Larochelle, H. (2015, June). Made: Masked autoencoder for distribution estimation. In International conference on machine learning (pp. 881-889). PMLR.
-
-    \item Grazzini, J., \& Richiardi, M. G. (2013). Consistent estimation of agent-based models by simulated minimum distance. LABORatorio R. Revelli working papers series, 130.
 
 
-    \item Papamakarios, G., Sterratt, D., \& Murray, I. (2019, April). Sequential neural likelihood: Fast likelihood-free inference with autoregressive flows. In The 22nd international conference on artificial intelligence and statistics (pp. 837-848). PMLR.
+\item Alves, M. L., Dyer, J., Farmer, J. D., Wooldridge, M., \& Calinescu, A. (2026). Neural network-based parameter estimation of a labour market agent-based model. \textit{arXiv preprint arXiv:2602.15572}.
 
-    \item Prangle, D. (2018). Summary statistics. In Handbook of approximate Bayesian computation (pp. 125-152). Chapman and Hall/CRC.
+\item Arthur, W. B. (1994). \textit{Increasing Returns and Path Dependence in the Economy}. University of Michigan Press.
 
-    \item Stillman, N. R., Baggott, R., Lyon, J., Zhang, J., Zhu, D., Chen, T., \& Vytelingum, P. (2023, November). Deep calibration of market simulations using neural density estimators and embedding networks. In Proceedings of the Fourth ACM International Conference on AI in Finance (pp. 46-54).
+\item Bishop, C. M. (1994). \textit{Mixture Density Networks}. Aston University Technical Report.
 
-    \item Radev, S. T., Mertens, U. K., Voss, A., Ardizzone, L., \& Köthe, U. (2020). BayesFlow: Learning complex stochastic models with invertible neural networks. IEEE transactions on neural networks and learning systems, 33(4), 1452-1466.
+\item Cannon, P., Ward, D., \& Schmon, S. M. (2022). Investigating the impact of model misspecification in neural simulation-based inference. \textit{arXiv preprint arXiv:2209.01845}.
 
-    \item Gers, F. A., Schmidhuber, J., \& Cummins, F. (2000). Learning to forget: Continual prediction with LSTM. Neural computation, 12(10), 2451-2471.
+\item Cho, K., Van Merriënboer, B., Bahdanau, D., \& Bengio, Y. (2014). On the properties of neural machine translation: Encoder–decoder approaches. In \textit{Proceedings of SSST-8} (pp. 103--111).
 
-    \item Durkan, C., Bekasov, A., Murray, I., \& Papamakarios, G. (2019). Neural spline flows. Advances in neural information processing systems, 32.
+\item Cook, S. R., Gelman, A., \& Rubin, D. B. (2006). Validation of software for Bayesian models using posterior quantiles. \textit{Journal of Computational and Graphical Statistics, 15}(3), 675--692.
 
-    \item Cook, S. R., Gelman, A., \& Rubin, D. B. (2006). Validation of software for Bayesian models using posterior quantiles. Journal of Computational and Graphical Statistics, 15(3), 675-692.
+\item Dawid, H., Gemkow, S., Harting, P., van der Hoog, S., \& Neugart, M. (2012). \textit{The Eurace@Unibi Model: An Agent-Based Macroeconomic Model for Economic Policy Analysis}. Bielefeld University Working Paper.
 
-    \item Geweke, J. (2004). Getting it right: Joint distribution tests of posterior simulators. Journal of the American Statistical Association, 99(467), 799-804.
+\item Deistler, M., Goncalves, P. J., \& Macke, J. H. (2022). Truncated proposals for scalable and hassle-free simulation-based inference. \textit{NeurIPS, 35}, 23135--23149.
 
-\end{enumerate}
+\item Delaunoy, A., Hermans, J., Rozet, F., Wehenkel, A., \& Louppe, G. (2022). Towards reliable simulation-based inference with balanced neural ratio estimation. \textit{NeurIPS, 35}, 20025--20037.
+
+\item Dey, B., Zhao, D., Andrews, B. H., Newman, J. A., Izbicki, R., \& Lee, A. B. (2025). Towards instance-wise calibration: Local amortized diagnostics and reshaping of conditional densities (LADaR). \textit{Machine Learning: Science and Technology, 6}(4), 045058.
+
+\item Dosi, G., Fagiolo, G., \& Roventini, A. (2010). Schumpeter meeting Keynes: A policy-friendly model of endogenous growth and business cycles. \textit{Journal of Economic Dynamics and Control, 34}(9), 1748--1767.
+
+\item Durkan, C., Bekasov, A., Murray, I., \& Papamakarios, G. (2019). Neural spline flows. \textit{NeurIPS, 32}.
+
+\item Durkan, C., Murray, I., \& Papamakarios, G. (2020). On contrastive learning for likelihood-free inference. In \textit{ICML} (pp. 2771--2781).
+
+\item Dyer, J., Cannon, P., Farmer, J. D., \& Schmon, S. M. (2024). Black-box Bayesian inference for agent-based models. \textit{Journal of Economic Dynamics and Control, 161}, 104556.
+
+\item Epstein, J. M., \& Axtell, R. (1996). \textit{Growing Artificial Societies: Social Science from the Bottom Up}. MIT Press.
+
+\item Fagiolo, G., Moneta, A., \& Windrum, P. (2007). Empirical validation of agent-based models: Alternatives and prospects. \textit{Journal of Artificial Societies and Social Simulation, 10}(2), Article 8.
+
+\item Farmer, J. D., \& Foley, D. (2009). The economy needs agent-based modelling. \textit{Nature, 460}(7256), 685--686.
+
+\item Gelman, A., Carlin, J. B., Stern, H. S., Dunson, D. B., Vehtari, A., \& Rubin, D. B. (2013). \textit{Bayesian Data Analysis} (3rd ed.). Chapman \& Hall/CRC.
+
+\item Geweke, J. (2004). Getting it right: Joint distribution tests of posterior simulators. \textit{Journal of the American Statistical Association, 99}(467), 799--804.
+
+\item Germain, M., Gregor, K., Murray, I., \& Larochelle, H. (2015). MADE: Masked autoencoder for distribution estimation. In \textit{ICML} (pp. 881--889).
+
+\item Gers, F. A., Schmidhuber, J., \& Cummins, F. (2000). Learning to forget: Continual prediction with LSTM. \textit{Neural Computation, 12}(10), 2451--2471.
+
+\item Glielmo, A., Devetak, M., Meligrana, A., \& Poledna, S. (2025). Beforeit.jl: High-performance agent-based macroeconomics made easy. \textit{arXiv preprint arXiv:2502.13267}.
+
+\item Glöckler, M., Deistler, M., \& Macke, J. H. (2022). Variational methods for simulation-based inference. \textit{arXiv preprint arXiv:2203.04176.}
+
+\item Grazzini, J., \& Richiardi, M. G. (2013). Consistent estimation of agent-based models by simulated minimum distance. \textit{LABORatorio R. Revelli Working Papers}, 130.
+
+\item Grazzini, J., Richiardi, M. G., \& Tsionas, M. (2017). Bayesian estimation of agent-based models. \textit{Journal of Economic Dynamics and Control, 77}, 26--47.
+
+\item Greenberg, D., Nonnenmacher, M., \& Macke, J. H. (2019). Automatic posterior transformation for likelihood-free inference. In \textit{ICML} (pp. 4288--4304).
+
+\item Gretton, A., Borgwardt, K. M., Rasch, M. J., Schölkopf, B., \& Smola, A. (2012). A kernel two-sample test. \textit{The journal of machine learning research}, 13(1), 723-773.
+
+\item Harris, C. R., Millman, K. J., Van Der Walt, S. J., et al. (2020). Array programming with NumPy. \textit{Nature, 585}(7825), 357--362.
+
+\item Hermans, J., Begy, V., \& Louppe, G. (2020). Likelihood-free MCMC with amortized approximate ratio estimators. In \textit{ICML} (pp. 4239--4248).
+
+\item Huang, D., Bharti, A., Souza, A., Acerbi, L., \& Kaski, S. (2023). Learning robust statistics for simulation-based inference under model misspecification. \textit{Advances in Neural Information Processing Systems}, 36, 7289-7310.
+
+\item Jung, A. K., \& Templin, J. (2026). Evaluating WAIC and PSIS-LOO for Bayesian diagnostic classification model selection. \textit{Behaviormetrika}, 1--21.
+
+\item Kass, R. E., \& Raftery, A. E. (1995). Bayes factors. \textit{Journal of the American Statistical Association, 90}(430), 773--795.
+
+\item Kirman, A. P. (1992). Whom or what does the representative individual represent? \textit{Journal of Economic Perspectives, 6}(2), 117--136.
+
+\item Kydland, F. E., \& Prescott, E. C. (1982). Time to build and aggregate fluctuations. \textit{Econometrica, 50}(6), 1345--1370.
+
+\item Laplante, W., Hikida, Y., Dellaporta, C., Briol, F. X., \& Bharti, A. (2026). Conservative neural posterior estimation via distributionally robust training. \textit{arXiv preprint arXiv:2605.28516}.
+
+\text LeBaron, B. (2006). Agent-based computational finance. Handbook of computational economics, 2, 1187-1233.
+
+\item Lee, B.-S., \& Ingram, B. F. (1991). Simulation estimation of time-series models. \textit{Journal of Econometrics, 47}(2--3), 197--205.
+
+\item Lemos, P., Coogan, A., Hezaveh, Y., \& Perreault-Levasseur, L. (2023). Sampling-based accuracy testing of posterior estimators for general inference. \textit{arXiv preprint arXiv:2302.03026}.
+
+\item Linhart, J., Gramfort, A., \& Rodrigues, P. (2023). L-C2ST: Local diagnostics for posterior approximations in simulation-based inference. \textit{NeurIPS, 36}.
+
+\item Lipman, Y., Chen, R. T., Ben-Hamu, H., Nickel, M., \& Le, M. (2022). Flow matching for generative modeling. \textit{arXiv preprint arXiv:2210.02747.}
+
+\item Lopez-Paz, D., \& Oquab, M. (2016). Revisiting classifier two-sample tests. \textit{arXiv preprint arXiv:1610.06545}.
+
+\item Lucas, R. E., Jr. (1976). Econometric policy evaluation: A critique. \textit{Carnegie-Rochester Conference Series on Public Policy, 1}, 19--46.
+
+\item Lueckmann, J., Boelts, J., Greenberg, D., Goncalves, P. \&amp; Macke, J.. (2021).  Benchmarking Simulation-Based Inference . \textit{Proceedings of The 24th International Conference on Artificial Intelligence and Statistics}, in \textit{Proceedings of Machine Learning Research} 130:343-351 Available from https://proceedings.mlr.press/v130/lueckmann21a.html.
+
+\item Lueckmann, J. M., Goncalves, P. J., Bassetto, G., Öcal, K., Nonnenmacher, M., \& Macke, J. H. (2017). Flexible statistical inference for mechanistic models of neural dynamics. \textit{NeurIPS, 30}.
+
+\item Lux, T. (2018). Estimation of agent-based models using sequential Monte Carlo methods. \textit{Journal of Economic Dynamics and Control, 91}, 391--408.
+
+\item Lux, T. (2022). Bayesian estimation of agent-based models via adaptive particle Markov chain Monte Carlo. \textit{Computational Economics, 60}(2), 451--477.
+
+\item Miller, B. K., Weniger, C., \& Forré, P. (2024). Contrastive Neural Ratio Estimation for Simulation-based Inference. \textit{arXiv preprint arXiv:2210.06170}
+
+\item Orcutt, G. H. (1957). A new type of socio-economic system. \textit{Review of Economics and Statistics, 39}(2), 116--123.
+
+\item Papamakarios, G., \& Murray, I. (2016). Fast $\varepsilon$-free inference of simulation models with Bayesian conditional density estimation. In \textit{NeurIPS, 29}.
+
+\item Papamakarios, G., Pavlakou, T., \& Murray, I. (2017). Masked autoregressive flow for density estimation. \textit{NeurIPS, 30}.
+
+\item Papamakarios, G., Sterratt, D., \& Murray, I. (2019). Sequential neural likelihood: Fast likelihood-free inference with autoregressive flows. In \textit{AISTATS} (pp. 837--848).
+
+\item Platt, D. (2022). Bayesian estimation of economic simulation models using neural networks. \textit{Computational Economics, 59}, 599--650.
+
+\item Poledna, S., Miess, M. G., Hommes, C., \& Rabitsch, K. (2023). Economic forecasting with an agent-based model. \textit{European Economic Review, 151}, 104306.
+
+\item Prangle, D. (2018). Summary statistics. In \textit{Handbook of Approximate Bayesian Computation} (pp. 125--152). Chapman \& Hall/CRC.
+
+\item Prangle, D., Blum, M. G., Popovic, G., \& Sisson, S. A. (2014). Diagnostic tools for approximate Bayesian computation using the coverage property. \textit{Australian \& New Zealand Journal of Statistics, 56}(4), 309--329.
+
+\item Radev, S. T., Mertens, U. K., Voss, A., \& Köthe, U. (2020). Towards end-to-end likelihood-free inference with convolutional neural networks. \textit{British Journal of Mathematical and Statistical Psychology, 73}(1), 23--43.
+
+\item Radev, S. T., Mertens, U. K., Voss, A., Ardizzone, L., \& Köthe, U. (2022). BayesFlow: Learning complex stochastic models with invertible neural networks. \textit{IEEE Transactions on Neural Networks and Learning Systems, 33}(4), 1452--1466.
+
+\item Rezende, D., \& Mohamed, S. (2015). Variational inference with normalizing flows. In \textit{ICML} (pp. 1530--1538).
+
+\item Rozet, F. (2021). Arbitrary marginal neural ratio estimation for likelihood-free inference.
+
+\item Smets, F., \& Wouters, R. (2007). Shocks and frictions in US business cycles: A Bayesian DSGE approach. \textit{American Economic Review, 97}(3), 586--606.
+
+\item Spiegelhalter, D. J., Best, N. G., Carlin, B. P., \& Van Der Linde, A. (2002). Bayesian measures of model complexity and fit. \textit{Journal of the Royal Statistical Society: Series B, 64}(4), 583--639.
+
+\item Stillman, N. R., Baggott, R., Lyon, J., Zhang, J., Zhu, D., Chen, T., \& Vytelingum, P. (2023). Deep calibration of market simulations using neural density estimators and embedding networks. In \textit{Proceedings of ICAIF} (pp. 46--54).
+
+\item Tabak, E. G., \& Vanden-Eijnden, E. (2010). Density estimation by dual ascent of the log-likelihood.
+
+\item Talts, S., Betancourt, M., Simpson, D., Vehtari, A., \& Gelman, A. (2018). Validating Bayesian inference algorithms with simulation-based calibration. \textit{arXiv preprint arXiv:1804.06788}.
+
+
+\item Tejero-Cantero, A., Boelts, J., Deistler, M., Lueckmann, J. M., Durkan, C., Gonçalves, P. J., et al. (2020). SBI: A toolkit for simulation-based inference. \textit{arXiv preprint arXiv:2007.09114}.
+
+\item Tesfatsion, L. (2006). Agent-based computational economics: A constructive approach to economic theory. In L. Tesfatsion \& K. L. Judd (Eds.), \textit{Handbook of Computational Economics} (Vol. 2, pp. 831--880). Elsevier.
+
+\item Tesfatsion, L., \& Judd, K. L. (Eds.). (2006). \textit{Handbook of Computational Economics: Agent-Based Computational Economics} (Vol. 2). Elsevier.
+
+\item Thomas, O., Dutta, R., Corander, J., Kaski, S., \& Gutmann, M. U. (2022). Likelihood-free inference by ratio estimation. Bayesian Analysis, 17(1), 1-31.
+
+\item Ward, D., Cannon, P., Beaumont, M., Fasiolo, M., \& Schmon, S. (2022). Robust neural posterior estimation and statistical model criticism. Advances in Neural Information Processing Systems, 35, 33845-33859.
+
+\item Watanabe, S. (2021). Information criteria and cross validation for Bayesian inference in regular and singular cases. \textit{Japanese Journal of Statistics and Data Science, 4}(1), 1--19.
+
+\item Wiese, S., Kaszowska-Mojsa, J., Dyer, J., Moran, J., Pangallo, M., Lafond, F., et al. (2024). Forecasting macroeconomic dynamics using a calibrated data-driven agent-based model. \textit{arXiv preprint arXiv:2409.18760}.
+
+\item Zhao, D., Dalmasso, N., Izbicki, R., \& Lee, A. B. (2021). Diagnostics for conditional density models and Bayesian inference algorithms. In \textit{UAI} (pp. 1830--1840).
+
+\end{enumerate} 
+
+\section*{Appendix}
+
+\subsection*{Prior checks}
+
+\subsubsection*{Experiments}
+
+
+Before deciding on the final combination of parameters and training approach, we run various NPE inferences to check many options. We examined sequential approaches with smaller number of training samples per round. The figure \ref{fig:sequntial_superceeded} presents one of those tries. We used 10 rounds, each with 400 training samples, what resulted in interestingly looking, but not converged posterior, where the peaks were exacerbated by the sequential sampling and approximation errors in the first rounds.
+
+\begin{figure}
+
+    \begin{subfigure}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{pngs/pairplots/pairplot_coverage_anomaly_28_coverage_nn_hierarchical_20260624_122449.png}
+        \caption{Hierarchical Recovery Anomaly}
+        \label{fig:hierarchical_anomaly_recovery}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{pngs/pairplots/pairplot_coverage_anomaly_23_coverage_nn_simple_hierarchical_20260624_122449.png}
+        \caption{Simple Hierarchical Recovery Anomaly}
+        \label{fig:simple_hierarchical_anomaly_recovery}
+    \end{subfigure}
+    \caption{Example anomalies for the hierarchical embeddings}
+    \label{fig:pp_anomalies}
+\end{figure}
+
+\subsubsection*{Recovery anomaly}
+As noted in the beginning of \ref{sec:validity} section, we encounter some posteriors, that were too confident for one of the parameter. The most common point of failure was left skew (toward 0, see fig. \ref{fig:pp_anomalies}) for $\bar{\pi}$, respectively 12, 20, 74, 53 for the embeddings as listed in Methodology. Moreover, only for Simple Hierarchical there was too narrow posterior for $\omega$ observed only once, but a skew can be seen on fig. \ref{fig:simple_hierarchical_anomaly_recovery}. But we decided not to discard the network based on this metric and continue with the checks, while noting that Simple Hierarchical has a tendency for too narrow posteriors. 
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{pngs/pairplots/pairplot_nn_npe_simple_hierarchical_seed_0.png}
+    \caption{Pair plot for simple Hierarchical embedding}
+    \label{fig:pp_simple_hierarchical}
+\end{figure}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{pngs/pairplots/pairplot_nn_npe_hierarchical_seed_0.png}
+    \caption{Pair plot for Proper Hierarchal embedding}
+    \label{fig:pp_hierarchical}
+\end{figure}
+
+
+\subsection*{Forecasts}
 
 \end{document}

@@ -67,6 +67,8 @@ print(f"Found {len(seeds)} seeds: {seeds}")
 for embedding, files in npe_embeddings.items():
     medians = np.zeros((len(files), 3))  # (n_seeds, n_parameters)
     int_widths = np.zeros((len(files), 3))  # (n_seeds, n_parameters)
+    q1 = np.zeros((len(files), 3))  # (n_seeds, n_parameters)
+    q3 = np.zeros((len(files), 3))  # (n_seeds, n_parameters)
 
     for i, f in enumerate(files):
         df = pd.read_csv(path.join(post_dir, f))
@@ -74,8 +76,14 @@ for embedding, files in npe_embeddings.items():
         stats = compute_statistic(data, 0.05) # (median, std, q1, q3)
         medians[i, :] = stats[0]
         int_widths[i, :] = stats[3] - stats[2]
+        q1[i, :] = stats[2]
+        q3[i, :] = stats[3]
 
     ensemble_median = np.median(medians, axis=0)
+    ensemble_median_idx = np.argmin(np.abs(medians - ensemble_median), axis=0)
+    
+    int_widths_ensemble_median = int_widths[ensemble_median_idx, np.arange(3)]
+
     mins_medians, maxs_medians = np.min(medians, axis=0), np.max(medians, axis=0)
     print(f"For NPE embedding {embedding}:")
     print(f"  Ensemble median: {" & ".join([f'{m:.2f} ({l:.2f}-{u:.2f})' for m, l, u in zip(ensemble_median, mins_medians, maxs_medians)])}")

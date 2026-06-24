@@ -76,7 +76,7 @@ parameters_to_calibrate = ["omega", "lambda_p", "pi_bar"]
 priors_bounds = [
     (0, 1),  # omega
     (0.001, 5),  # lambda_p
-    (0, 10),  # pi_bar
+    (0, 1.5),  # pi_bar
 ]
 
 assert len(parameters_to_calibrate) == len(priors_bounds), "Number of parameters to calibrate must match number of prior bounds."
