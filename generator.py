@@ -126,19 +126,33 @@ def run_prior_check(samples, real, cal_date, keys):
     avg_samples = np.mean(samples, axis=1)  # (n_samples, len
     n_rows = int(np.ceil(len(keys) / 4))
     n_cols = 4
-    fig, axs = plt.subplots(n_rows, n_cols, figsize=(24, 16))
+    fig, axs = plt.subplots(n_rows, n_cols, figsize=(18, 12), sharex="all")
     for i in range(avg_samples.shape[1]): ### for all keys
         idx = np.unravel_index(i, (n_rows, n_cols))
-        plt.sca(axs[idx])
-        plt.plot(real[i, :], label="Real", color="black", linewidth=2)
+        ax = axs[idx]
+        ax.plot(real[i, :], label="Real", color="black", linewidth=2)
         for j in range(avg_samples.shape[0]): ### for all samples
-            plt.plot(avg_samples[j, i, :], alpha=0.5, color="blue")
-        plt.title(f"Prior check for key: {keys[i]}")
-        plt.xlabel(f"Time, from {cal_date.strftime('%Y-%m-%d')}")
-        plt.ylabel(keys[i])
+            ax.plot(avg_samples[j, i, :], alpha=0.5, color="blue")
+        ax.set_title(f"{keys[i]}")
+        ax.set_xlabel(f"Time, from {cal_date.strftime('%Y-%m-%d')}")
+        ax.set_ylabel(keys[i])
+
+    legend_bbox = None
+    if len(keys) % 2 != 0:
+        fig.tight_layout()
+        legend_bbox = axs[-1, -1].get_position().frozen()
+        fig.delaxes(axs[-1, -1])  # Remove the last empty subplot if the number of keys is odd
+        
+    handles, labels = ax.get_legend_handles_labels()
+    if legend_bbox is not None:
+        fig.legend(handles, labels, loc="center", bbox_to_anchor=legend_bbox, bbox_transform=fig.transFigure, prop = {"size": 20})
+    else:
+        fig.legend(handles, labels, loc="lower right", prop = {"size": 20})
+        fig.tight_layout()
+
     file_end = f"p_{",".join(parameters_to_calibrate)}_bounds{','.join([str(b) for b in priors_bounds.numpy()])}"
     plt.savefig(f"pngs/prior_checks/{country}_prior_check_{cal_date.strftime('%Y-%m-%d')}_{file_end}.png")
-    plt.legend(loc="upper left")
+    plt.legend(loc="upper left", prop={"size": 20})
     plt.close()
     
     
@@ -234,7 +248,7 @@ def gen_sweep_dataset (parameters_to_calibrate, priors_bounds, priors, country):
         )
     return sweep_theta_values, out
 
-def sweep_prior (parameters_to_calibrate, priors_bounds, priors, country):
+def sweep_prior (parameters_to_calibrate, priors_bounds, priors, country, keys):
 
     lowers, uppers = priors_bounds.detach().clone().T
     theta_base = (lowers + uppers) / 2
@@ -242,15 +256,15 @@ def sweep_prior (parameters_to_calibrate, priors_bounds, priors, country):
     num_points_per_dim = 9
     sim_per_point = 50
 
-    x_plot = torch.zeros((num_points_per_dim, len(avaible_keys), T_hist + 1))
+    x_plot = torch.zeros((num_points_per_dim, len(keys), T_hist + 1))
 
-    n_rows = int(np.ceil(len(keys) / 4))
-    n_cols = 4
+    n_rows = int(np.ceil(len(keys) / 3))
+    n_cols = 3
 
     for i in range(len(theta_base)):
         low, high = priors_bounds[i]
         sweep_values = torch.linspace(low, high, num_points_per_dim + 2)[1:-1]
-        fig, axs = plt.subplots(n_rows, n_cols, figsize=(24, 16))
+        fig, axs = plt.subplots(n_rows, n_cols, figsize=(18, 8), sharex="all")
 
         for j, val in enumerate(sweep_values):
             theta_sweep = theta_base.clone()
@@ -264,7 +278,7 @@ def sweep_prior (parameters_to_calibrate, priors_bounds, priors, country):
                 params_to_calibrate=parameters_to_calibrate,
                 n_samples=1,
                 n_runs=sim_per_point,
-                keys=avaible_keys,
+                keys=keys,
                 country=country,
                 sample_theta = theta_sweep,
             )
@@ -275,15 +289,27 @@ def sweep_prior (parameters_to_calibrate, priors_bounds, priors, country):
 
         for j in range(x_plot.shape[1]): ### for all keys
             idx = np.unravel_index(j, (n_rows, n_cols))
-            plt.sca(axs[idx])
+            ax = axs[idx]
             for k in range(x_plot.shape[0]): ### for all samples
-                plt.plot(x_plot[k, j, :], alpha=0.5, label=f"{parameters_to_calibrate[i]} = {sweep_values[k]:.3f}")
-            plt.title(f"{keys[j]}")
-            plt.xlabel(f"{initial_calibration.strftime('%Y-%m-%d')}")
+                ax.plot(x_plot[k, j, :], alpha=0.5, label=f"{parameters_to_calibrate[i]} = {sweep_values[k]:.3f}")
+            ax.set_title(f"{keys[j]}")
+            ax.set_xlabel(f"{initial_calibration.strftime('%Y-%m-%d')}")
 
+        legend_bbox = None
+        if len(keys) % 2 != 0:
+            fig.tight_layout()
+            legend_bbox = axs[1, -1].get_position().frozen()
+            fig.delaxes(axs[1, -1])  # Remove the last empty subplot if the number of keys is odd
+        
+        handles, labels = ax.get_legend_handles_labels()
+        if legend_bbox is not None:
+            fig.legend(handles, labels, loc="center", bbox_to_anchor=legend_bbox, bbox_transform=fig.transFigure, prop = {"size": 20})
+        else:
+            fig.legend(handles, labels, loc="lower right", prop = {"size": 20})
+            fig.tight_layout()
 
-        plt.legend(loc="upper left")
-        plt.show()
+        plt.savefig(f"pngs/sweeps/{country}_sweep_{parameters_to_calibrate[i]}.png")
+        plt.close()
 
 n_runs = 1
 keys = avaible_keys
@@ -292,7 +318,15 @@ prior_draws = np.zeros((num_calibrations, n_histories, len(parameters_to_calibra
 
 
 if "sweep_prior" in argv:
-    sweep_prior(parameters_to_calibrate, priors_bounds, priors, country)
+    keys = [
+        "real_gdp_quarterly",
+        "gdp_deflator_quarterly",
+        "real_household_consumption_quarterly",
+        "real_government_consumption_quarterly",
+        "real_capitalformation_quarterly",
+    ]
+
+    sweep_prior(parameters_to_calibrate, priors_bounds, priors, country, keys)
     exit()
 
 ### real data

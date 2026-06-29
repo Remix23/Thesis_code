@@ -4,7 +4,11 @@ import pandas as pd
 from os import path, listdir
 
 T = [1, 2, 3, 4, 8, 12]
-files = listdir("rsmfe")
+
+### the single forecast on log - diff
+dir_path = "rmsfe3"
+
+files = listdir(dir_path)
 
 keys = [
         "real_gdp_quarterly",
@@ -24,7 +28,7 @@ rsmfes = np.zeros((len(files), len(T), 5))  # (n_models, n_forecast_horizons, n_
 
 for i, f in enumerate(files):
     if f.endswith(".csv"):
-        data = np.loadtxt(path.join("rsmfe", f), delimiter=",", skiprows=1)
+        data = np.loadtxt(path.join(dir_path, f), delimiter=",", skiprows=1)
         rsmfes[i, :, :] = data
 
 abm_rmsfe = rsmfes[idx_abm, :, :]
@@ -64,11 +68,15 @@ for method in methods_NPE:
     for j, key in enumerate(keys):
         print(f"& {to_names[key]} ", end="")
         for t in range(len(T)):
-            print(f" & {improvemnt_abm[idx, t, j]*100:.2f}\\% ", end="")
+            print(f" & {improvement_ar[idx, t, j]*100:.2f}\\% ", end="")
         print("\\\\")
 
 for j, key in enumerate(keys):
     print(f"& {to_names[key]} ", end="")
     for t in range(len(T)):
-        print(f" & {abm_rmsfe[t, j] * 10**3:.0f} $\\cdot 10^{{-3}}$ ", end="")
+        print(f" & {ar_rmsfe[t, j] * 10**3:.2f} $\\cdot 10^{{-3}}$ ", end="")
+        # if key == "gdp_deflator_quarterly":
+        #     print(f" & {abm_rmsfe[t, j] * 10**(3):.2f} $\\cdot 10^{{-3}}$ ", end="")
+        #     continue
+        # print(f" & {abm_rmsfe[t, j] * 10**(-2):.2f} $\\cdot 10^{{2}}$", end="")
     print("\\\\")

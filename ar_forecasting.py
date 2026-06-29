@@ -53,7 +53,6 @@ keys = [
     ]
 
 real_data = real_data[keys].dropna()
-print(real_data.head())
 
 forecast_from = pd.to_datetime("2016-12-31")
 start_from = len(real_data[real_data.index < forecast_from])
@@ -62,27 +61,37 @@ time_series = real_data[real_data.index <= forecast_from].values.T
 print(f"Shape of time series: {time_series.shape}")
 realized_series = real_data[real_data.index >= forecast_from].values.T
 realized_series = np.diff(np.log(realized_series), axis=1)  # log-differenced series
+
 time_series = np.diff(np.log(time_series), axis=1)  # log-differenced series
-print(realized_series.shape)
+print(realized_series)
 
 ### AR(1) for each feature
 
 ### forecast: for T = {1, 2, 3, 4, 8, 12}
 T_forecast = [1, 2, 3, 4, 8, 12]
-rmsfes = np.zeros((len(T_forecast), time_series.shape[0]))  # (n_forecast_horizons, n_features)
+rmsfes_ar = np.zeros((len(T_forecast), time_series.shape[0]))  # (n_forecast_horizons, n_features)
+
+### compte to the random walk
+rmfes_rw = np.zeros((len(T_forecast), time_series.shape[0]))  # (n_forecast_horizons, n_features)
 
 ar1_params = []
 for i in range(time_series.shape[0]):
     params = findar_p(time_series[i, :], 1)
     print(f"Feature {i}: AR(1) parameters: {params[0]} + {params[1]} * x(t-1)")
     
-    
-    forecast = forecast_ar1(params, T_forecast[-1], time_series[i, -1])
-    ### compute forecast errors
-    forecast_errors = forecast - realized_series[i, :T_forecast[-1]]
-    for j, t in enumerate(T_forecast):
-        rmsfe = np.sqrt(np.mean(forecast_errors[:t]**2))
-        rmsfes[j, i] = rmsfe
-        print(f"Feature {i}: RMSFE for T={t}: {rmsfe:.4f}")
+    forecast_rw = np.full(T_forecast[-1], np.mean(time_series[i, :]))  # Random walk forecast (mean of the series)
 
-np.savetxt("rsmfe/rmsfes_ar1.csv", rmsfes, delimiter=",", header=",".join(keys), comments="")
+    forecast_ar = forecast_ar1(params, T_forecast[-1], time_series[i, -1])
+    ### compute forecast errors
+    forecast_errors_ar = forecast_ar - realized_series[i, :T_forecast[-1]]
+    forecast_errors_rw = forecast_rw - realized_series[i, :T_forecast[-1]]
+    for j, t in enumerate(T_forecast):
+        rmsfe_ar = np.sqrt(np.mean(forecast_errors_ar[:t]**2))
+        rmsfe_rw = np.sqrt(np.mean(forecast_errors_rw[:t]**2))
+
+        rmsfes_ar[j, i] = rmsfe_ar
+        rmfes_rw[j, i] = rmsfe_rw   
+        # print(f"Feature {i}: RMSFE for T={t}: {rmsfe:.4f}")
+
+np.savetxt("rmsfe5/rmsfes_ar1.csv", rmsfes_ar, delimiter=",", header=",".join(keys), comments="")
+np.savetxt("rmsfe5/rmsfes_rw.csv", rmfes_rw, delimiter=",", header=",".join(keys), comments="")

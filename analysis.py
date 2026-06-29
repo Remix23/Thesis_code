@@ -2,6 +2,7 @@ from os import path, listdir, getcwd, environ
 import os
 from sys import argv
 from datetime import datetime, date
+from dateutil.relativedelta import relativedelta
 from typing import Tuple
 NUM_THREADS = 10
 
@@ -592,7 +593,7 @@ def ppc_plot (observed_values, sim_out_transformed, filename):
 def ppc_trajectories (observed_data, sim_out_trajectories, keys, country, filename):
     n_rows= 2
     ncols= len(keys) // n_rows + len(keys) % n_rows
-    fig, axs = plt.subplots(2, len(keys) // 2 + len(keys) % 2 , figsize=(12, 4 * len(keys)))
+    fig, axs = plt.subplots(2, len(keys) // 2 + len(keys) % 2 , figsize=(4 * len(keys), 12))
     if len(keys) == 1:
         axs = [axs]
 
@@ -869,18 +870,13 @@ def compute_median_rsmfe (forecast, realized, T):
 
     return out
 
-def plot_forecasts (forecasts : dict[str, np.ndarray], realized_future, keys):
+def plot_forecasts (forecasts : dict[str, np.ndarray], realized_future, keys, cal_date):
     fig, axs = plt.subplots(2, len(keys) // 2 + len(keys) % 2, figsize=(18, 12), sharex="all")
     for i, key in zip(range(len(keys)), keys):
         ax = axs[np.unravel_index(i, axs.shape)]
         ax.plot(range(T_forecast + 1), realized_future[key], label="Real " + key, color="black")
-        rolling_rsmfes = {}
-        print(f"\nForecast comparison for {key}:")
         for version, forecast in forecasts.items():
             forecast_series = np.mean(forecast, axis = 0)
-            rmsfe = compute_rmsfes(forecast_series[i, :], realized_future[key].values)
-            rolling_rsmfes[version] = rmsfe
-            print(f"RMSFE of {version} forecast: {rmsfe[-1]:.4f}")
             ax.plot(range(T_forecast + 1), forecast_series[i, :], label=f"{version} ")
         
         ax.set_xticks(range(T_forecast + 1), realized_future["date"].dt.strftime("%Y-%m").values, rotation=45)
@@ -900,7 +896,7 @@ def plot_forecasts (forecasts : dict[str, np.ndarray], realized_future, keys):
     else:
         fig.legend(handles, labels, loc="lower right")
         fig.tight_layout()
-    plt.savefig(f"pngs/forecast_comparison_seed_{seed_value}.png")
+    plt.savefig(f"pngs/forecast_comparison_seed_{seed_value}_{cal_date.strftime('%Y-%m-%d')}.png")
     plt.clf()
     return {}
 
@@ -908,12 +904,14 @@ def prepare_forecasts_for_date (posteriors, full_observed, forecast_horizon, key
 
     forecasts = {}
     #### all quarters
-    for i in range(NUM_CALIBRATION_DATES * 4):
-        cal_date = FIRST_CALIBRATION_DATE + pd.DateOffset(months=i)
+    for i in range(16):
+        cal_date = final_calibration + relativedelta(months = 3 * i)
+        
+        print(f"\nPreparing forecasts for calibration date: {cal_date.strftime('%Y-%m-%d')}")
         params, initial = jl.calibrate (
             cal_date.year, cal_date.month, cal_date.day, country
         )
-        print(f"\nPreparing forecasts for calibration date: {cal_date.strftime('%Y-%m-%d')}")
+        
         forecasts[cal_date] = {}
 
         for version, posterior in posteriors.items():
@@ -923,16 +921,16 @@ def prepare_forecasts_for_date (posteriors, full_observed, forecast_horizon, key
 
         ### compute AR(1) forecast
         ar1_forecasts = np.zeros((100, len(keys), forecast_horizon + 1))
-        series = full_observed[full_observed["date"] <= cal_date]
+        reduced_series = full_observed[full_observed["date"] <= cal_date]
         for i, key in enumerate(keys):
-            training_series = series[key].values
+            training_series = reduced_series[key].values
             series = np.diff(np.log(training_series))
             coef = findar_p(series, 1)
-            f = forecast_ar1(coef, forecast_horizon, training_series[-1]).reshape(1, -1)
+            f = forecast_ar1(coef, forecast_horizon, series[-1]).reshape(1, -1)
             f = np.exp(np.cumsum(f, axis = -1) + np.log(training_series[-2]))
             ar1_forecasts[:, i, :] = f.repeat(100, 0)
 
-        forecasts[cal_date]["AR(1)"] = ar1_forecasts
+        forecasts[cal_date]["AR1"] = ar1_forecasts
 
         ### ABM reference forecast
         abm_forecasts = jl.run_monte_carlo(params, initial, forecast_horizon, 100, keys, cal_date, country)
@@ -940,7 +938,7 @@ def prepare_forecasts_for_date (posteriors, full_observed, forecast_horizon, key
 
         realized_future = full_observed[full_observed["date"] >= cal_date]
         realized_future = realized_future.head(forecast_horizon + 1)
-        _ = plot_forecasts(forecasts[cal_date], realized_future, keys)
+        _ = plot_forecasts(forecasts[cal_date], realized_future, keys, cal_date)
 
     return forecasts
 
@@ -954,7 +952,7 @@ def compute_rmsfes (forecast, realized, ts):
         out[:, i] = np.mean(squared_errors[:, :t], axis=1)
     return np.sqrt(out)
 
-def summarize_forecasts (forecasts, full_observed, keys, ts):
+def summarize_forecasts (forecasts, full_observed, keys, ts, num_runs = 100):
     ### Compute RMSFE for each forecast and calibration date
     forecast_horizon = max(ts)
 
@@ -963,16 +961,24 @@ def summarize_forecasts (forecasts, full_observed, keys, ts):
     num_models = len(next(iter(forecasts.values())))
     num_keys = len(keys)
 
-    rmsfes = np.zeros((num_models, num_forecasts_horizons, num_keys))
+    rmsfes = np.zeros((num_models, num_runs * num_cal_dates, num_keys, num_forecasts_horizons ))
+    rmsfes_diff = np.zeros((num_models, num_runs * num_cal_dates, num_keys, num_forecasts_horizons ))
 
-    for cal_date, forecast_versions in forecasts.items():
+    to_log_diff = lambda x: np.diff(np.log(x), axis=-1)
+
+    for i, (cal_date, forecast_versions) in enumerate(forecasts.items()):
         realized_future = full_observed[full_observed["date"] >= cal_date].head(forecast_horizon + 1)
-        realized_future = realized_future[keys].values
+        realized_future = realized_future[keys].values.T
     
-        for version, forecast in forecast_versions.items():
-
-            rmsfes = compute_rmsfes(forecast[:, i, :], realized_future[key].values)
+        for j, (version, f) in enumerate(forecast_versions.items()):
+            r1 = np.stack([compute_rmsfes(f[i, :, 1:], realized_future[:, 1:], ts) for i in range(num_runs)])
+            r2 = np.stack([compute_rmsfes(to_log_diff(f[i, :, :]), to_log_diff(realized_future), ts) for i in range(num_runs)])
+            rmsfes[j, i * num_runs:(i + 1) * num_runs, :, :] = r1
+            rmsfes_diff[j, i * num_runs:(i + 1) * num_runs, :, :] = r2
             # rmsfe_summary[cal_date][version] = rmsfes
+    medians = np.median(rmsfes, axis=1)
+    medians_log_diff = np.median(rmsfes_diff, axis=1)
+    return medians, medians_log_diff
 
 if __name__ == "__main__":
 
@@ -1148,13 +1154,13 @@ if __name__ == "__main__":
         )
 
 
-        nns = [simple_hierarchical, hierarchical, seq_multivariate] # nn_raw, nn_diff, nn_3channels, nn_rnn, nn_cnn_mixture,
+        nns = [simple_hierarchical, hierarchical, to_seq_x] # nn_raw, nn_diff, nn_3channels, nn_rnn, nn_cnn_mixture,
         x_transforms = [to_hierarchical_x, to_hierarchical_x, to_seq_x] # to_seq_x, to_seq_x, to_seq_x, to_seq_x, to_seq_x,
         theta_transforms = [to_hierarchical_theta, to_hierarchical_theta, to_seq_theta] # to_seq_theta, to_seq_theta, to_seq_theta, to_seq_theta, to_seq_theta,
         x_o_transforms = [to_hierarchical_x, to_hierarchical_x, to_seq_x_o] # to_seq_x_o, to_seq_x_o, to_seq_x_o, to_seq_x_o, to_seq_x_o,
         nn_transforms = list(zip(theta_transforms, x_transforms, x_o_transforms))
         # nn_transforms += [lambda x: reduction(x)[:, 1:], lambda x: to_growth_rate(reduction(x)), lambda x: x[..., 1:],  to_seq_multivariate]
-        nn_versions = ["simple_hierarchical", "hierarchical", "seq_multivariate"    ] # "cnn_log", "cnn_growth_rate", "cnn_level",
+        nn_versions = ["simple_hierarchical", "hierarchical", "to_seq_x"] # "cnn_log", "cnn_growth_rate", "cnn_level",
 
         assert len(nns) == len(nn_versions) == len(nn_transforms), "Length of nns, nn_versions, nn_transforms and nn_keys must be the same"
 
@@ -1209,17 +1215,17 @@ if __name__ == "__main__":
         ### pairplots for statistics-based NPE
 
         for p, s in zip(statistics_posteriors, statistics_versions):
-            pplot_stat(p, hist_params, filename = "npe_ " + ",".join(to_short_names(s)) + f"_seed_{seed_value}")
+            pplot_stat(p, hist_params, filename = "npe_" + ",".join(to_short_names(s)) + f"_n{NUM_SIM_PER_ROUND}_seed_{seed_value}")
 
         for r, s in zip(statistics_nres, statistics_versions):
-            pplot_stat(r, hist_params, filename = "nre_ " + ",".join(to_short_names(s)) + f"_seed_{seed_value}")
+            pplot_stat(r, hist_params, filename = "nre_" + ",".join(to_short_names(s)) + f"_n{NUM_SIM_PER_ROUND}_seed_{seed_value}")
 
         for p, transform, name in zip(nn_posteriors, nn_transforms, nn_versions):
-            pplot_stat(p, hist_params, filename = f"nn_npe_{name}" + f"_seed_{seed_value}")
+            pplot_stat(p, hist_params, filename = f"nn_npe_{name}" + f"_n{NUM_SIM_PER_ROUND}_seed_{seed_value}")
 
 
         for r, transform, name in zip(nn_nres, nn_transforms, nn_versions):
-            pplot_stat(r, hist_params, filename = f"nn_nre_{name}" + f"_seed_{seed_value}")
+            pplot_stat(r, hist_params, filename = f"nn_nre_{name}" + f"_n{NUM_SIM_PER_ROUND}_seed_{seed_value}")
 
     if "ppc" in argv:
         ### for statistics
@@ -1807,3 +1813,12 @@ if __name__ == "__main__":
             country=country
         )
 
+        ### medians are: (n_models, n_keys, n_Ts)
+        models = forecasts[list(forecasts.keys())[0]]
+        medians, medians_log_diff = summarize_forecasts(forecasts, df, keys, Ts)
+        for i, name in enumerate(models.keys()):
+            print(f"RSMFE for {name}:")
+            for j, key in enumerate(keys):
+                print(f"  {key}: {medians[i][j, :]}")
+            np.savetxt(f"rmsfe2/rsmfe_median_{name}_seed_{seed_value}.csv", medians[i].T, delimiter=",", header=",".join(keys))
+            np.savetxt(f"rsmfe/rsmfe_median_log_diff_{name}_seed_{seed_value}.csv", medians_log_diff[i].T, delimiter=",", header=",".join(keys))

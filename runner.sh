@@ -1,7 +1,7 @@
 source venv/bin/activate
 
 # seeds:
-for i in {0..5}
+for i in {0..4}
 do
     num=$(($RANDOM % 100))
     echo "Running analysis with seed $num"
